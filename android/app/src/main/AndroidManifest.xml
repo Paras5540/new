@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Internet: server API calls (heartbeat, status, notification sync) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Notification sync: user grants Notification Listener access in Settings.
+         Purpose explained in-app before the settings deep-link. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Data sync permissions: each is requested at runtime ONLY when the user
+         enables that feature in the app, with an explanation screen first.
+         Revoking any of them in Android Settings disables that sync instantly. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.ConnectDesk"
+        android:allowBackup="false">
+
+        <!-- Visible main activity: pairing + status + disconnect.
+             This app NEVER hides its icon; uninstall is always possible. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Screen-share consent host: transparent, launched only when the
+             dashboard requests a screen session. The OS MediaProjection
+             dialog it raises CANNOT be suppressed — explicit consent. -->
+        <activity
+            android:name=".ScreenConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Foreground service: keeps heartbeat + notification sync alive while
+             connected. Shows a persistent "ConnectDesk connected" notification. -->
+        <service
+            android:name=".DeviceService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- Screen capture service (Android 10+): streams JPEG frames only
+             while a screen session is active. Shows its own persistent
+             notification with a Stop button; ends when the user or the
+             dashboard stops the session. -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!-- Notification listener: syncs notifications to the dashboard, only
+             while the user enabled it AND the dashboard toggle is on. Content
+             is masked on-device before leaving the phone. -->
+        <service
+            android:name=".NotificationSyncService"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

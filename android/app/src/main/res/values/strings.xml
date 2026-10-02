@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">ConnectDesk</string>
+
+    <!-- Consent & purpose strings (shown before any permission request) -->
+    <string name="pair_title">Connect to your dashboard</string>
+    <string name="pair_explain">ConnectDesk lets YOU (or a parent/guardian who set this up with you) view device status, files and notifications from a web dashboard. A persistent notification appears whenever this app is connected, and you can disconnect anytime from this screen. This app does not hide, record keystrokes, or access your camera or microphone.</string>
+    <string name="notif_listener_explain">To show phone notifications on the dashboard, Android requires Notification access. Content is masked on this phone before it leaves (OTPs/passwords are never synced). You can turn this off anytime in Settings.</string>
+
+    <!-- Screen share (MediaProjection) consent strings -->
+    <string name="screen_notif_title">Screen is being shared</string>
+    <string name="screen_notif_text">ConnectDesk screen session active — tap Stop to end anytime</string>
+    <string name="screen_notif_stop">Stop</string>
+    <string name="screen_channel_name">ConnectDesk screen sharing</string>
+
+    <string name="pair_code_hint">Pairing code (from dashboard QR)</string>
+    <string name="pair_button">Pair device</string>
+    <string name="connected_status">Connected to ConnectDesk dashboard</string>
+    <string name="pending_status">Waiting for approval on the dashboard…</string>
+    <string name="revoked_status">Access revoked. You can close this app.</string>
+    <string name="disconnect_button">Disconnect</string>
+    <string name="notif_toggle">Sync notifications to dashboard</string>
+    <string name="open_notif_settings">Grant notification access</string>
+    <string name="channel_name">ConnectDesk status</string>
+</resources>
