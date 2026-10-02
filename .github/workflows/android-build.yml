@@ -27,7 +27,7 @@ jobs:
             echo "### Runner"
             echo '```'
             uname -a
-            echo "```"
+            echo '```'
             echo "### Java"
             echo '```'
             java -version 2>&1 || echo "NO JAVA"
@@ -75,8 +75,20 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
           sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
 
-          if ! command -v gradle >/dev/null 2>&1; then
-            echo "::warning::Gradle not preinstalled, downloading Gradle 8.7"
+          NEED_GRADLE=1
+          if command -v gradle >/dev/null 2>&1; then
+            GMV="$(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}')"
+            echo "preinstalled gradle version: ${GMV:-unknown}"
+            GMN="$(echo "${GMV:-0.0}" | cut -d. -f1,2)"
+            if [ -n "$GMV" ]; then
+              LOWEST="8.2"
+              if [ "$(printf '%s\n%s\n' "$LOWEST" "$GMN" | sort -V | head -1)" = "$LOWEST" ]; then
+                NEED_GRADLE=0
+              fi
+            fi
+          fi
+          if [ "$NEED_GRADLE" = "1" ]; then
+            echo "::warning::Installing Gradle 8.7 (missing or older than 8.2)"
             curl -fsSL --retry 3 -o /tmp/gradle.zip \
               https://services.gradle.org/distributions/gradle-8.7-bin.zip
             sudo unzip -q -o /tmp/gradle.zip -d /opt
@@ -90,7 +102,7 @@ jobs:
 
           cd android
           set +e
-          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log
+          gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/build.log
           STATUS=${PIPESTATUS[0]}
           set -e
           echo "gradle exit code: $STATUS" >> "$GITHUB_STEP_SUMMARY"
@@ -101,9 +113,10 @@ jobs:
             echo "::error::No APK produced. See the build log in the job summary."
             exit 1
           fi
+          APK_SIZE=$(stat -c%s "$APK")
           echo "### APK" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "$APK  ($(stat -c%s "$APK") bytes)" >> "$GITHUB_STEP_SUMMARY"
+          echo "$APK - $APK_SIZE bytes" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           mkdir -p "$GITHUB_WORKSPACE/apk-out"
           cp "$APK" "$GITHUB_WORKSPACE/apk-out/connectdesk.apk"
