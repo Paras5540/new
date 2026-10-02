@@ -11,6 +11,8 @@
     <string name="screen_notif_text">ConnectDesk screen session active — tap Stop to end anytime</string>
     <string name="screen_notif_stop">Stop</string>
     <string name="screen_channel_name">ConnectDesk screen sharing</string>
+    <string name="share_button">Share my screen</string>
+    <string name="share_stop_button">Stop sharing</string>
 
     <string name="pair_code_hint">Pairing code (from dashboard QR)</string>
     <string name="pair_button">Pair device</string>
