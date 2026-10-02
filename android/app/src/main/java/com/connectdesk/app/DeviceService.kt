@@ -10,6 +10,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
@@ -20,11 +21,17 @@ import kotlin.concurrent.thread
 import org.json.JSONObject
 
 /**
- * Foreground service that keeps the device connected: sends heartbeats and
- * shows the persistent "ConnectDesk connected" notification. The notification
- * is a hard consent requirement — removing it stops the service.
+ * Foreground service that keeps the device connected: sends a heartbeat every
+ * ~60s and shows the persistent "ConnectDesk connected" notification. The
+ * notification is a hard consent requirement — removing it stops the service.
  *
- * Runs every 60s. Battery-friendly (no wake-locks); Android may batch it.
+ * Loop design notes (hardened after a "connected but no data" incident):
+ *  - The heartbeat POST is the FIRST thing each tick, so a slow or failing
+ *    status/sync call can never starve it.
+ *  - Every failure mode is caught as Throwable, and a failed tick retries after
+ *    a short delay instead of sleeping the full interval.
+ *  - Loop state is mirrored into ServiceStatus so the UI can prove the service
+ *    is genuinely alive (the "Connected" label alone does not prove that).
  */
 class DeviceService : Service() {
     private var running = false
@@ -33,62 +40,90 @@ class DeviceService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val token = ApiClient.loadToken(this) ?: run {
+            ServiceStatus.markStop()
             stopSelf()
             return START_NOT_STICKY
         }
-        startForeground(NOTIF_ID, buildNotification())
+        // Must happen before any slow work, or Android kills the service.
+        startAsForeground()
         registerLocationListener()
         if (!running) {
             running = true
-            thread(name = "connectdesk-loop") {
-                loop(token)
-            }
+            ServiceStatus.markStart()
+            thread(name = "connectdesk-loop") { loop(token) }
         }
         return START_STICKY
     }
 
     private fun loop(token: String) {
+        var failures = 0
         while (running) {
+            var ok = false
             try {
-                val state = ApiClient.status(token)
-                val status = state?.status
-                if (status == "revoked") {
-                    ApiClient.clearToken(this)
-                    stopSelf()
-                    return
-                }
+                // 1. Heartbeat FIRST — never blocked by anything else.
                 val battery = batteryPct()
                 val storage = storageMb()
-                ApiClient.heartbeat(token, battery, storage?.first, storage?.second)
-                // Consent-gated bulk sync (SMS/calls/contacts/location/media):
-                // only runs for capabilities the owner enabled AND permissions
-                // the user granted. Runs every 5th tick (~5 min).
-                if (state != null && status == "approved") {
-                    tick++
-                    // Location: near real-time — passive listener cache + post
-                    // every tick (~60s) jab capability on ho (battery: GPS
-                    // listener sirf passive updates dekhta hai).
-                    maybePostLocation(token, state)
-                    // Dashboard commands (SMS reply, photo fetch) — har tick.
+                val beat = ApiClient.heartbeat(
+                    token, battery, storage?.first, storage?.second,
+                )
+                if (beat != null) {
+                    ok = true
+                    failures = 0
+                } else {
+                    failures++
+                    ServiceStatus.markError(
+                        ApiClient.lastError ?: "heartbeat rejected",
+                    )
+                }
+
+                // 2. Everything else is best-effort and must never kill the loop.
+                if (ok) {
                     try {
-                        CommandWorker.runPending(this@DeviceService, token)
-                    } catch (_: Exception) {
-                    }
-                    // Consent-gated bulk sync (SMS/calls/contacts/media):
-                    // runs every 5th tick (~5 min).
-                    if (tick % 5 == 1) {
-                        DataSyncWorker.syncAll(this@DeviceService, token, state)
+                        val state = ApiClient.status(token)
+                        ServiceStatus.markBeat(state?.status ?: beat)
+                        val status = state?.status
+                        if (status == "revoked") {
+                            ApiClient.clearToken(this)
+                            running = false
+                            stopSelf()
+                            return
+                        }
+                        if (state != null && status == "approved") {
+                            tick++
+                            // Location: ~60s freshness from the passive cache.
+                            try { maybePostLocation(token, state) } catch (_: Throwable) {}
+                            // Commands (SMS reply, photo fetch, screen share).
+                            try {
+                                CommandWorker.runPending(this@DeviceService, token)
+                            } catch (_: Throwable) {}
+                            // Bulk sync (SMS/calls/contacts/media) every 5th tick.
+                            if (tick % 5 == 1) {
+                                try {
+                                    DataSyncWorker.syncAll(this@DeviceService, token, state)
+                                } catch (_: Throwable) {}
+                            }
+                        }
+                    } catch (t: Throwable) {
+                        ServiceStatus.markError("post-beat: ${t.message ?: t::class.simpleName}")
                     }
                 }
-            } catch (e: Exception) {
-                // network errors are expected; next tick retries
+            } catch (t: Throwable) {
+                // Catch Throwable, not just Exception: an Error here (OOM, no
+                // thread space) would otherwise kill the heartbeat forever.
+                failures++
+                ServiceStatus.markError(t.message ?: t::class.simpleName ?: "unknown error")
             }
+
+            // Retry quickly after a failure so the device self-heals instead of
+            // staying silent for a full minute.
+            val wait = if (ok) TICK_MS else minOf(RETRY_MS, TICK_MS)
             try {
-                Thread.sleep(60_000)
-            } catch (e: InterruptedException) {
+                Thread.sleep(wait)
+            } catch (_: InterruptedException) {
                 return
             }
         }
+        ServiceStatus.markStop()
     }
 
     private var tick = 0
@@ -120,10 +155,10 @@ class DeviceService : Service() {
             for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
                 try {
                     lm.requestLocationUpdates(provider, 30_000L, 10f, locationListener, Looper.getMainLooper())
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
                 }
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
     }
 
@@ -151,14 +186,14 @@ class DeviceService : Service() {
                     .put("lng", last.longitude)
                     .put("accuracyM", last.accuracy.toDouble()),
             )
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
     }
 
     private fun batteryPct(): Int? = try {
         val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
         bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
-    } catch (e: Exception) {
+    } catch (_: Throwable) {
         null
     }
 
@@ -167,18 +202,18 @@ class DeviceService : Service() {
         val total = dir.totalSpace / (1024 * 1024)
         val free = dir.freeSpace / (1024 * 1024)
         Pair(total - free, total)
-    } catch (e: Exception) {
+    } catch (_: Throwable) {
         null
     }
 
-    private fun buildNotification(): Notification {
+    private fun startAsForeground() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= 26) {
             nm.createNotificationChannel(
                 NotificationChannel(CHANNEL, getString(R.string.channel_name), NotificationManager.IMPORTANCE_LOW),
             )
         }
-        val stopIntent = PendingIntent.getActivity(
+        val openApp = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE,
         )
         val builder = if (Build.VERSION.SDK_INT >= 26) {
@@ -186,21 +221,36 @@ class DeviceService : Service() {
         } else {
             @Suppress("DEPRECATION") Notification.Builder(this)
         }
-        return builder
+        val notif = builder
             .setContentTitle("ConnectDesk connected")
             .setContentText("Tap to manage or disconnect")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentIntent(stopIntent)
+            .setContentIntent(openApp)
             .setOngoing(true)
             .build()
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                // Declare the type explicitly: the 2-arg form is rejected on
+                // newer Android versions when the manifest declares a type.
+                startForeground(
+                    NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+                )
+            } else {
+                startForeground(NOTIF_ID, notif)
+            }
+        } catch (_: Throwable) {
+            // Never let a notification problem stop the heartbeat loop.
+            runCatching { startForeground(NOTIF_ID, notif) }
+        }
     }
 
     override fun onDestroy() {
         running = false
+        ServiceStatus.markStop()
         try {
             (getSystemService(Context.LOCATION_SERVICE) as LocationManager)
                 .removeUpdates(locationListener)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
         super.onDestroy()
     }
@@ -209,12 +259,18 @@ class DeviceService : Service() {
         private const val CHANNEL = "connectdesk_status"
         private const val NOTIF_ID = 42
 
+        /** Normal heartbeat cadence. */
+        private const val TICK_MS = 60_000L
+
+        /** Fast retry after a failed tick, so the device self-heals. */
+        private const val RETRY_MS = 15_000L
+
         fun start(context: Context) {
-            context.startForegroundService(Intent(context, DeviceService::class.java))
+            runCatching { context.startForegroundService(Intent(context, DeviceService::class.java)) }
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, DeviceService::class.java))
+            runCatching { context.stopService(Intent(context, DeviceService::class.java)) }
         }
     }
 }

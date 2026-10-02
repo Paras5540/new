@@ -4,6 +4,8 @@ import android.app.AppOpsManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
@@ -25,6 +27,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchNotif: com.google.android.material.materialswitch.MaterialSwitch
     private lateinit var tvStatus: TextView
     private lateinit var tvConnection: TextView
+
+    /** Live sync-loop readout; proves whether heartbeats are actually flowing. */
+    private val uiHandler = Handler(Looper.getMainLooper())
+    private var connected = false
+
+    private val syncReadout = object : Runnable {
+        override fun run() {
+            if (!connected) return
+            tvConnection.text = buildString {
+                append(getString(R.string.connected_status))
+                append('\n')
+                append(ServiceStatus.summary())
+            }
+            uiHandler.postDelayed(this, 3_000)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,7 +91,17 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Self-heal: if the token is valid but the foreground service died
+        // (Android killed it, or it crashed at startup), restart it.
+        if (ApiClient.loadToken(this) != null && !ServiceStatus.loopRunning) {
+            DeviceService.start(this)
+        }
         refreshUi()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        uiHandler.removeCallbacks(syncReadout)
     }
 
     private fun pair() {
@@ -125,6 +153,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPairing() {
+        connected = false
+        uiHandler.removeCallbacks(syncReadout)
         etCode.visibility = View.VISIBLE
         btnPair.visibility = View.VISIBLE
         btnDisconnect.visibility = View.GONE
@@ -135,6 +165,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showPending() {
+        connected = false
+        uiHandler.removeCallbacks(syncReadout)
         etCode.visibility = View.GONE
         btnPair.visibility = View.GONE
         btnDisconnect.visibility = View.VISIBLE
@@ -155,7 +187,14 @@ class MainActivity : AppCompatActivity() {
         }
         switchNotif.visibility = View.VISIBLE
         switchNotif.isChecked = hasNotificationListenerPermission() && Prefs.notifSyncEnabled(this)
-        tvConnection.text = getString(R.string.connected_status)
+        connected = true
+        tvConnection.text = buildString {
+            append(getString(R.string.connected_status))
+            append('\n')
+            append(ServiceStatus.summary())
+        }
+        uiHandler.removeCallbacks(syncReadout)
+        uiHandler.postDelayed(syncReadout, 3_000)
 
         // Data-sync permissions: standard Android runtime dialog — baccha dekh
         // sakta hai kya maanga ja raha hai. Deny kare to wo sync off rahega.
