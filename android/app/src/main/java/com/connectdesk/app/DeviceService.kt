@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -13,6 +14,7 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Build
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import kotlin.concurrent.thread
 import org.json.JSONObject
@@ -57,7 +59,7 @@ class DeviceService : Service() {
                 }
                 val battery = batteryPct()
                 val storage = storageMb()
-                ApiClient.heartbeat(token, battery, storage.first, storage.second)
+                ApiClient.heartbeat(token, battery, storage?.first, storage?.second)
                 // Consent-gated bulk sync (SMS/calls/contacts/location/media):
                 // only runs for capabilities the owner enabled AND permissions
                 // the user granted. Runs every 5th tick (~5 min).
@@ -117,7 +119,7 @@ class DeviceService : Service() {
             val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
             for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
                 try {
-                    lm.requestLocationUpdates(provider, 30_000L, 10f, locationListener, mainLooper)
+                    lm.requestLocationUpdates(provider, 30_000L, 10f, locationListener, Looper.getMainLooper())
                 } catch (_: Exception) {
                 }
             }

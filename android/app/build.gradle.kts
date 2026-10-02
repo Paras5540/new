@@ -22,6 +22,12 @@ android {
         }
     }
 
+    // AGP 8 disables BuildConfig generation by default; ApiClient reads
+    // BuildConfig.VERSION_NAME, so it must be switched on explicitly.
+    buildFeatures {
+        buildConfig = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

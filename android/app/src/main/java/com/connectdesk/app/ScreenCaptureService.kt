@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.util.Base64
 import java.io.ByteArrayOutputStream
 
@@ -46,7 +47,7 @@ class ScreenCaptureService : Service() {
     private var imageReader: ImageReader? = null
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
-    private val mainHandler = Handler(getMainLooper())
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var running = false
     private var seq = 0L
     private var width = 720
