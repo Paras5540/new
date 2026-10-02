@@ -15,7 +15,6 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.Image
 import android.media.ImageReader
-import android.view.Surface
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -123,12 +122,12 @@ object CameraWorker {
                         CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
                     )
                     builder.set(CaptureRequest.JPEG_ORIENTATION, 0)
-                    // The callback is bound to a named val with an explicit
-                    // type: inline object expressions here made overload
-                    // resolution ambiguous against the SessionConfiguration
-                    // variant of createCaptureSession.
                     val sessionCallback = object : CameraCaptureSession.StateCallback() {
                         override fun onConfigured(configured: CameraCaptureSession) {
+                            // The session is captured from the callback itself.
+                            // Assigning the result of createCaptureSession()
+                            // does not type-check against the deprecated
+                            // overloads, so it is deliberately not used.
                             session = configured
                             try {
                                 configured.setRepeatingRequest(builder.build(), null, main)
@@ -145,10 +144,7 @@ object CameraWorker {
                             sessionLatch.countDown()
                         }
                     }
-                    val surfaces: List<Surface> = listOf(reader.surface)
-                    val created: CameraCaptureSession =
-                        camera.createCaptureSession(surfaces, sessionCallback, main)
-                    session = created
+                    camera.createCaptureSession(listOf(reader.surface), sessionCallback, main)
                 } catch (_: Throwable) {
                     sessionLatch.countDown()
                 }

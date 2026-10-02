@@ -92,12 +92,16 @@ object AppUsageWorker {
         val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
         val since = System.currentTimeMillis() - WINDOW_DAYS * 24L * 60 * 60 * 1000
 
-        // queryUsageStats returns a plain List<UsageStats>, not a cursor —
-        // iterate it directly and keep the most-used record per package.
+        // queryUsageStats returns a plain List<UsageStats>, not a cursor.
+        // The result is bound to an explicitly typed local so the call
+        // resolves against exactly one overload.
         val stats = HashMap<String, UsageStats>()
         if (usage != null) {
             try {
-                for (us in usage.queryUsageStats(UsageStatsManager.INTERVAL_BEST, since)) {
+                val interval: Int = UsageStatsManager.INTERVAL_BEST
+                val beginTime: Long = since
+                val rows: List<UsageStats> = usage.queryUsageStats(interval, beginTime)
+                for (us in rows) {
                     val pkg = us.packageName
                     if (pkg.isNullOrEmpty()) continue
                     val prev = stats[pkg]
@@ -134,8 +138,6 @@ object AppUsageWorker {
                         .put("packageName", pkg)
                         .put("label", safeLabel(pm, info))
                         .put("isSystem", isSystem)
-                        .put("versionName", info.versionName ?: "")
-                        .put("firstInstallAt", info.firstInstallTime)
                         .put("lastUsedAt", st?.lastTimeUsed ?: 0L)
                         .put("launchCount", launches[pkg] ?: 0)
                         .put(

@@ -99,10 +99,12 @@ class CallRecorderService : Service() {
         }
         listener = l
         try {
-            // PhoneState.LISTEN_CALL_STATE is the public bitmask; the older
-            // PhoneStateListener.CALL_STATE_LISTENER constant was pulled from
-            // the SDK and no longer resolves.
-            tm.listen(l, android.telephony.PhoneState.LISTEN_CALL_STATE)
+            // PhoneStateListener.LISTEN_CALL_STATE is the public bitmask. The older
+            // PhoneStateListener.CALL_STATE_LISTENER constant and the
+            // android.telephony.PhoneState class are both gone from the SDK.
+            // Being a static final int, it is inlined at compile time, so
+            // there is no runtime field lookup on older API levels.
+            tm.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
         } catch (_: Throwable) {
             listener = null
         }
