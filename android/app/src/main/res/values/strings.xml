@@ -35,14 +35,14 @@
     <string name="chats_toggle_explain">Chat sync sends only the message previews Android already shows on your lock screen (sender + message) from WhatsApp, Instagram, Snapchat and similar apps. Android does not let any app read a real chat database, and ConnectDesk does not try to. You need to grant Notification access first, and you can turn this off here at any time.</string>
     <string name="clipboard_toggle">Sync clipboard to dashboard</string>
     <string name="clipboard_toggle_explain">Clipboard sync only works while this screen is open — Android blocks backgrounded apps from reading the clipboard, and ConnectDesk does not attempt to work around that. Passwords, OTPs and card numbers are dropped on this phone before anything is sent.</string>
-    <string name="grant_usage_access">Grant Usage access (for app list &amp; screen time)</string>
+    <string name="grant_usage_access">Grant Usage access (for app list and screen time)</string>
     <string name="run_self_test">Run security self-test (debug build)</string>
-    <string name="self_test_running">Running security probes\u2026</string>
+    <string name="self_test_running">Running security probes...</string>
     <string name="call_toggle">Record my calls (phone microphone only)</string>
     <string name="call_toggle_explain">Android does not let any app record the other person on a call, so this records only your own microphone. It starts by itself after the other side picks up, shows a permanent notification the whole time, and the file is deleted from this phone as soon as it reaches the dashboard. You can stop any recording from that notification.</string>
     <string name="call_channel_name">ConnectDesk call recording</string>
     <string name="call_notif_title">Recording this call</string>
-    <string name="call_notif_text">Only this phone&#39;s microphone is being recorded. Tap Stop to end it.</string>
+    <string name="call_notif_text">Only the microphone on this phone is being recorded. Tap Stop to end it.</string>
     <string name="call_idle_title">Call recording is on</string>
     <string name="call_idle_text">Waiting for a call. Recording covers your microphone only.</string>
     <string name="open_notif_settings">Grant notification access</string>
