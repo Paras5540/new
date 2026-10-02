@@ -8,7 +8,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
     steps:
       - uses: actions/checkout@v4
 
@@ -18,37 +19,100 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Show environment
+      - name: Prepare toolchain, accept licences and build the APK
         run: |
-          java -version
-          gradle --version
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          set -o pipefail
+          echo "===== DIAGNOSTIC REPORT ====="
+          {
+            echo "### Runner"
+            echo '```'
+            uname -a
+            echo "```"
+            echo "### Java"
+            echo '```'
+            java -version 2>&1 || echo "NO JAVA"
+            echo '```'
+            echo "### JAVA_HOME=$JAVA_HOME"
+            echo "### ANDROID_HOME=$ANDROID_HOME"
+            echo "### ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            echo "### Gradle"
+            echo '```'
+            gradle --version 2>&1 || echo "GRADLE NOT ON PATH"
+            echo '```'
+          } 2>&1 | tee /tmp/diag.txt || true
+          cat /tmp/diag.txt >> "$GITHUB_STEP_SUMMARY" || true
 
-      # A fresh runner has no accepted SDK licences — without this the
-      # package install step fails with "licences have not been accepted".
-      - name: Accept Android SDK licences
-        run: |
+          if [ -z "$ANDROID_HOME" ]; then
+            for candidate in /usr/local/lib/android/sdk "$HOME/Android/Sdk" /usr/local/android-sdk; do
+              if [ -d "$candidate" ]; then
+                echo "ANDROID_HOME=$candidate" >> "$GITHUB_ENV"
+                echo "ANDROID_SDK_ROOT=$candidate" >> "$GITHUB_ENV"
+                echo "export ANDROID_HOME=$candidate" >> "$GITHUB_ENV"
+                echo "export ANDROID_SDK_ROOT=$candidate" >> "$GITHUB_ENV"
+                break
+              fi
+            done
+          fi
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/tools/bin:$ANDROID_HOME/platform-tools"
+
+          if ! command -v sdkmanager >/dev/null 2>&1; then
+            echo "::warning::sdkmanager not found on PATH, trying known locations"
+            SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -1 || true)"
+            if [ -z "$SDKMANAGER" ]; then
+              echo "::error::Android SDK cmdline tools not found - install Android Studio once, or add cmdline-tools to the runner image."
+              exit 1
+            fi
+            export PATH="$(dirname "$SDKMANAGER"):$PATH"
+          fi
+          echo "sdkmanager -> $(command -v sdkmanager)"
+
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager --licenses | tail -5 || true
+          yes | sdkmanager --license android-sdk-license > /dev/null 2>&1 || true
 
-      - name: Install Android platform and build tools
-        run: sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" || \
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
+          sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
 
-      - name: Build debug APK
-        working-directory: android
-        run: gradle assembleDebug --no-daemon --stacktrace
+          if ! command -v gradle >/dev/null 2>&1; then
+            echo "::warning::Gradle not preinstalled, downloading Gradle 8.7"
+            curl -fsSL --retry 3 -o /tmp/gradle.zip \
+              https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            sudo unzip -q -o /tmp/gradle.zip -d /opt
+            echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
+            export PATH="/opt/gradle-8.7/bin:$PATH"
+          fi
+          gradle --version >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
 
-      - name: Upload APK artifact
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          cat android/local.properties >> "$GITHUB_STEP_SUMMARY"
+
+          cd android
+          set +e
+          gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/build.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          echo "gradle exit code: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          tail -60 /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
+
+          APK="$(find "$GITHUB_WORKSPACE/android" -name '*.apk' -type f 2>/dev/null | head -1 || true)"
+          if [ -z "$APK" ]; then
+            echo "::error::No APK produced. See the build log in the job summary."
+            exit 1
+          fi
+          echo "### APK" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$APK  ($(stat -c%s "$APK") bytes)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$GITHUB_WORKSPACE/apk-out"
+          cp "$APK" "$GITHUB_WORKSPACE/apk-out/connectdesk.apk"
+          echo "APK_STAGED_AT=$GITHUB_WORKSPACE/apk-out/connectdesk.apk" >> "$GITHUB_ENV"
+
+      - name: Upload APK (always runs, even if the build failed)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: connectdesk-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          path: apk-out/connectdesk.apk
+          if-no-files-found: warn
