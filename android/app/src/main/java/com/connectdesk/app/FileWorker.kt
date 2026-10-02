@@ -1,6 +1,5 @@
 package com.connectdesk.app
 
-import android.content.Context
 import android.os.Build
 import android.os.Environment
 import org.json.JSONArray
@@ -39,15 +38,16 @@ object FileWorker {
     )
 
     fun scanAndSync(token: String): Pair<Boolean, String> {
-        val root = Environment.getExternalStorageDirectory()
-        if (root == null || !Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+        if (!Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
             return Pair(false, "Shared storage is not available")
         }
+        val root = Environment.getExternalStorageDirectory()
         val arr = JSONArray()
         var count = 0
         try {
-            val roots = root.listFiles()?.filter { it.isDirectory && it.name in interestingRoots }
-                ?: root.listFiles()?.filter { it.isDirectory } ?: emptyList()
+            val top: List<File> = root.listFiles()?.filter { it.isDirectory } ?: emptyList<File>()
+            val preferred = top.filter { it.name in interestingRoots }
+            val roots: List<File> = if (preferred.isNotEmpty()) preferred else top
             for (dir in roots) {
                 if (count >= MAX_ENTRIES) break
                 walk(dir, "", 0, arr) { count++; count < MAX_ENTRIES }
@@ -167,7 +167,4 @@ object FileWorker {
     /** True when Android exposes a shared-storage root we can read. */
     fun storageReady(): Boolean =
         Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
-
-    @Suppress("unused")
-    fun unusedContextHint(context: Context) = Unit
 }

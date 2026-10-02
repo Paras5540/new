@@ -3,7 +3,6 @@ package com.connectdesk.app
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
-import android.database.Cursor
 import android.provider.CallLog
 import android.provider.ContactsContract
 import android.provider.Telephony
@@ -25,52 +24,36 @@ object DataSyncWorker {
     fun syncAll(context: Context, token: String, state: ApiClient.DeviceState) {
         thread(name = "connectdesk-sync") {
             try {
-                if (state.files && hasPermission(context, android.Manifest.permission.READ_SMS)) {
-                    // SMS handled via Telephony.SMS here for consistency
+                // Two gates per feature: the dashboard owner enabled the
+                // capability (state, fetched this tick by DeviceService) AND
+                // the phone user granted the Android permission.
+                if (state.sms && hasPermission(context, android.Manifest.permission.READ_SMS)) {
+                    syncSms(context, token)
                 }
-                if (hasPermission(context, android.Manifest.permission.READ_SMS)) {
-                    val caps = ApiClient.status(token)
-                    if (caps?.let { capabilityFromStatus(it, "sms") } == true) {
-                        syncSms(context, token)
-                    }
+                if (state.callLogs && hasPermission(context, android.Manifest.permission.READ_CALL_LOG)) {
+                    syncCalls(context, token)
                 }
-                if (hasPermission(context, android.Manifest.permission.READ_CALL_LOG)) {
-                    val caps = ApiClient.status(token)
-                    if (caps?.let { capabilityFromStatus(it, "call_logs") } == true) {
-                        syncCalls(context, token)
-                    }
+                if (state.contacts && hasPermission(context, android.Manifest.permission.READ_CONTACTS)) {
+                    syncContacts(context, token)
                 }
-                if (hasPermission(context, android.Manifest.permission.READ_CONTACTS)) {
-                    val caps = ApiClient.status(token)
-                    if (caps?.let { capabilityFromStatus(it, "contacts") } == true) {
-                        syncContacts(context, token)
-                    }
+                if (state.location &&
+                    hasPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION)
+                ) {
+                    syncLocation(context, token)
                 }
-                if (hasPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION)) {
-                    val caps = ApiClient.status(token)
-                    if (caps?.let { capabilityFromStatus(it, "location") } == true) {
-                        syncLocation(context, token)
-                    }
-                }
-                // Media index needs no runtime permission on modern Android
-                val caps = ApiClient.status(token)
-                if (caps?.let { capabilityFromStatus(it, "media") } == true) {
+                // The media index itself needs no runtime permission on modern
+                // Android; reading the file later still does.
+                if (state.media) {
                     syncMedia(context, token)
+                }
+                // Installed apps + usage stats. Cheap once Usage access is
+                // granted, so it rides along with the periodic bulk sync.
+                if (state.appActivity && AppUsageWorker.hasUsageAccess(context)) {
+                    AppUsageWorker.sync(context, token)
                 }
             } catch (e: Exception) {
                 // best-effort; next cycle retries
             }
-        }
-    }
-
-    private fun capabilityFromStatus(state: ApiClient.DeviceState, cap: String): Boolean {
-        return when (cap) {
-            "sms" -> state.sms
-            "call_logs" -> state.callLogs
-            "contacts" -> state.contacts
-            "location" -> state.location
-            "media" -> state.media
-            else -> false
         }
     }
 

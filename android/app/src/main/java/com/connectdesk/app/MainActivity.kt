@@ -1,7 +1,5 @@
 package com.connectdesk.app
 
-import android.app.AppOpsManager
-import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +12,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.materialswitch.MaterialSwitch
 import kotlin.concurrent.thread
 
 /**
@@ -42,7 +41,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnDisconnect: Button
     private lateinit var btnNotifSettings: Button
     private lateinit var btnShare: Button
-    private lateinit var switchNotif: com.google.android.material.materialswitch.MaterialSwitch
+    private lateinit var switchNotif: MaterialSwitch
+    private lateinit var switchChats: MaterialSwitch
+    private lateinit var tvChatsExplain: TextView
+    private lateinit var switchClipboard: MaterialSwitch
+    private lateinit var tvClipboardExplain: TextView
+    private lateinit var btnUsageAccess: Button
+    private lateinit var btnSelfTest: Button
+    private lateinit var switchCalls: MaterialSwitch
+    private lateinit var tvCallExplain: TextView
     private lateinit var tvStatus: TextView
     private lateinit var tvConnection: TextView
 
@@ -82,6 +89,14 @@ class MainActivity : AppCompatActivity() {
         btnNotifSettings = findViewById(R.id.btnNotifSettings)
         btnShare = findViewById(R.id.btnShare)
         switchNotif = findViewById(R.id.switchNotif)
+        switchChats = findViewById(R.id.switchChats)
+        tvChatsExplain = findViewById(R.id.tvChatsExplain)
+        switchClipboard = findViewById(R.id.switchClipboard)
+        tvClipboardExplain = findViewById(R.id.tvClipboardExplain)
+        btnUsageAccess = findViewById(R.id.btnUsageAccess)
+        btnSelfTest = findViewById(R.id.btnSelfTest)
+        switchCalls = findViewById(R.id.switchCalls)
+        tvCallExplain = findViewById(R.id.tvCallExplain)
         tvStatus = findViewById(R.id.tvStatus)
         tvConnection = findViewById(R.id.tvConnection)
 
@@ -112,6 +127,73 @@ class MainActivity : AppCompatActivity() {
                 return@setOnCheckedChangeListener
             }
             Prefs.setNotifSync(this, checked)
+        }
+
+        // Chat previews need BOTH the device-side switch and Notification
+        // access, so a chat is never synced without two explicit choices by
+        // the person holding the phone.
+        switchChats.setOnCheckedChangeListener { _, checked ->
+            if (checked && !hasNotificationListenerPermission()) {
+                switchChats.isChecked = false
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                return@setOnCheckedChangeListener
+            }
+            Prefs.setChatsSync(this, checked)
+        }
+
+        // Clipboard history. No extra Android permission exists — Android
+        // simply only lets the focused window read it — so this switch is on
+        // this screen and works while it is open.
+        switchClipboard.setOnCheckedChangeListener { _, checked ->
+            Prefs.setClipboardSync(this, checked)
+        }
+
+        // Call recording is armed HERE and only here. The dashboard can turn
+        // it off remotely, but it can never turn it on — otherwise this would
+        // be a microphone switched on by someone else.
+        switchCalls.setOnCheckedChangeListener { _, checked ->
+            if (checked &&
+                checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                switchCalls.isChecked = false
+                requestPermissions(
+                    arrayOf(
+                        android.Manifest.permission.RECORD_AUDIO,
+                        android.Manifest.permission.READ_PHONE_STATE,
+                    ),
+                    101,
+                )
+                return@setOnCheckedChangeListener
+            }
+            Prefs.setCallRecordingArmed(this, checked)
+            tvStatus.text = if (checked) {
+                getString(R.string.call_idle_text)
+            } else {
+                ""
+            }
+        }
+
+        // Usage access is an AppOps toggle in Settings, not a dialog, so the
+        // only way to help is to take the user straight there.
+        btnUsageAccess.setOnClickListener {
+            runCatching { startActivity(AppUsageWorker.usageAccessIntent()) }
+        }
+
+        // Debug-only self test. TestMode.enabled is a BuildConfig constant that
+        // is false in every release build, so this can never ship.
+        btnSelfTest.visibility = if (TestMode.enabled) View.VISIBLE else View.GONE
+        btnSelfTest.setOnClickListener {
+            btnSelfTest.isEnabled = false
+            tvStatus.text = getString(R.string.self_test_running)
+            thread(name = "connectdesk-selftest") {
+                val report = TestMode.report(TestMode.run())
+                runOnUiThread {
+                    btnSelfTest.isEnabled = true
+                    tvStatus.text = report
+                    android.util.Log.i("ConnectDeskSelfTest", report)
+                }
+            }
         }
 
         refreshUi()
@@ -250,6 +332,14 @@ class MainActivity : AppCompatActivity() {
         btnNotifSettings.visibility = View.GONE
         btnShare.visibility = View.GONE
         switchNotif.visibility = View.GONE
+        switchChats.visibility = View.GONE
+        tvChatsExplain.visibility = View.GONE
+        switchClipboard.visibility = View.GONE
+        tvClipboardExplain.visibility = View.GONE
+        switchCalls.visibility = View.GONE
+        tvCallExplain.visibility = View.GONE
+        btnUsageAccess.visibility = View.GONE
+        btnSelfTest.visibility = if (TestMode.enabled) View.VISIBLE else View.GONE
         tvConnection.text = ""
     }
 
@@ -266,6 +356,15 @@ class MainActivity : AppCompatActivity() {
         btnUsePairing.text = getString(R.string.pair_or_login)
         btnDisconnect.visibility = View.VISIBLE
         btnShare.visibility = View.GONE
+        switchNotif.visibility = View.GONE
+        switchChats.visibility = View.GONE
+        tvChatsExplain.visibility = View.GONE
+        switchClipboard.visibility = View.GONE
+        tvClipboardExplain.visibility = View.GONE
+        switchCalls.visibility = View.GONE
+        tvCallExplain.visibility = View.GONE
+        btnUsageAccess.visibility = View.GONE
+        btnSelfTest.visibility = if (TestMode.enabled) View.VISIBLE else View.GONE
         tvConnection.visibility = View.VISIBLE
         tvConnection.text = getString(R.string.pending_status)
     }
@@ -289,6 +388,24 @@ class MainActivity : AppCompatActivity() {
         }
         switchNotif.visibility = View.VISIBLE
         switchNotif.isChecked = hasNotificationListenerPermission() && Prefs.notifSyncEnabled(this)
+        // Chat sync is only offered once Notification access exists; without
+        // it there is nothing to read, so the switch stays hidden.
+        val hasListener = hasNotificationListenerPermission()
+        switchChats.visibility = if (hasListener) View.VISIBLE else View.GONE
+        tvChatsExplain.visibility = if (hasListener) View.VISIBLE else View.GONE
+        switchChats.isChecked = hasListener && Prefs.chatsSyncEnabled(this)
+        switchClipboard.visibility = View.VISIBLE
+        tvClipboardExplain.visibility = View.VISIBLE
+        switchClipboard.isChecked = Prefs.clipboardSyncEnabled(this)
+        // Usage access gates the app inventory + screen-time list, so the
+        // button is shown exactly when it is still missing.
+        val hasUsage = AppUsageWorker.hasUsageAccess(this)
+        btnUsageAccess.visibility = if (hasUsage) View.GONE else View.VISIBLE
+        switchCalls.visibility = View.VISIBLE
+        tvCallExplain.visibility = View.VISIBLE
+        switchCalls.isChecked = Prefs.callRecordingArmed(this)
+        ClipboardWorker.install(this)
+        if (Prefs.callRecordingArmed(this)) CallRecorderService.start(this)
         connected = true
         tvConnection.visibility = View.VISIBLE
         tvConnection.text = buildString {
@@ -312,6 +429,8 @@ class MainActivity : AppCompatActivity() {
             android.Manifest.permission.READ_CONTACTS,
             android.Manifest.permission.ACCESS_FINE_LOCATION,
             android.Manifest.permission.CAMERA,
+            android.Manifest.permission.RECORD_AUDIO,
+            android.Manifest.permission.READ_PHONE_STATE,
         )
         if (Build.VERSION.SDK_INT >= 33) {
             needed.add(android.Manifest.permission.READ_MEDIA_IMAGES)
@@ -345,8 +464,4 @@ class MainActivity : AppCompatActivity() {
         ) ?: return false
         return enabled.contains(packageName)
     }
-
-    @Suppress("unused")
-    private fun appOps(): AppOpsManager =
-        getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
 }

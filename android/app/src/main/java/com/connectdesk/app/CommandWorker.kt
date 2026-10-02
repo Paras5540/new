@@ -44,6 +44,9 @@ object CommandWorker {
                 "capture_photo" -> capturePhoto(context, token, cmd.payload)
                 "refresh_files" -> refreshFiles(token)
                 "fetch_file" -> fetchFile(token, cmd.payload)
+                "refresh_apps" -> refreshApps(context, token)
+                "sync_now" -> syncNow(context, token)
+                "arm_call_recording" -> armCallRecording(context, cmd.payload)
                 else -> Pair(false, "Unknown command type: ${cmd.type}")
             }
             // start_screen reports asynchronously (after the user answers the
@@ -259,6 +262,75 @@ object CommandWorker {
             return Pair(false, "The app does not have permission to read shared storage")
         }
         return FileWorker.scanAndSync(token)
+    }
+
+    /**
+     * Dashboard asked for fresh data right now instead of waiting for the next
+     * heartbeat. This changes TIMING only — every step below still re-checks
+     * the device's capabilities and phone-side permissions, so nothing that
+     * was off can turn on because of this command.
+     */
+    private fun syncNow(context: Context, token: String): Pair<Boolean, String> {
+        val done = ArrayList<String>()
+
+        val state = ApiClient.status(token)
+        if (state == null) return Pair(false, "Could not read device status")
+
+        if (state.media) {
+            done += if (FileWorker.storageReady()) {
+                FileWorker.scanAndSync(token).let { if (it.first) "files" else "files failed" }
+            } else {
+                "files (no storage permission)"
+            }
+        }
+        if (state.sms && hasPermission(context, Manifest.permission.READ_SMS)) {
+            DataSyncWorker.syncAll(context, token, state)
+            done += "sms/calls/contacts"
+        }
+        if (state.appActivity && AppUsageWorker.hasUsageAccess(context)) {
+            AppUsageWorker.sync(context, token)
+            done += "apps"
+        }
+        if (state.location) {
+            done += "location queued"
+        }
+        if (done.isEmpty()) {
+            return Pair(false, "No capabilities are enabled for this device")
+        }
+        return Pair(true, "Refreshed: ${done.joinToString(", ")}")
+    }
+
+    /**
+     * The dashboard can only DISARM call recording from a distance. Arming has
+     * to be a choice made on the phone, otherwise this would be a microphone
+     * switched on remotely.
+     */
+    private fun armCallRecording(context: Context, payload: JSONObject): Pair<Boolean, String> {
+        if (!Prefs.callRecordingArmed(context)) {
+            return Pair(false, "Call recording is switched off on the device")
+        }
+        val armed = payload.optBoolean("armed", true)
+        Prefs.setCallRecordingArmed(context, armed)
+        return Pair(
+            true,
+            if (armed) {
+                "Call recording is armed on the device (phone microphone only)"
+            } else {
+                "Call recording switched off from the dashboard"
+            },
+        )
+    }
+
+    /**
+     * Re-scans installed apps and usage stats. Needs the phone-side "Usage
+     * access" grant; without it the result says so instead of quietly
+     * uploading an empty list.
+     */
+    private fun refreshApps(context: Context, token: String): Pair<Boolean, String> {
+        if (!AppUsageWorker.hasUsageAccess(context)) {
+            return Pair(false, "Grant Usage access to ConnectDesk in Android Settings first")
+        }
+        return AppUsageWorker.sync(context, token)
     }
 
     private fun fetchFile(token: String, payload: JSONObject): Pair<Boolean, String> {

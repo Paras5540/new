@@ -17,6 +17,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import androidx.core.location.LocationManagerCompat
 import kotlin.concurrent.thread
 import org.json.JSONObject
 
@@ -48,6 +49,10 @@ class DeviceService : Service() {
         // Must happen before any slow work, or Android kills the service.
         startAsForeground()
         registerLocationListener()
+        // Foreground-only clipboard watch. Android refuses clipboard reads
+        // from a backgrounded app anyway, so this stops costing anything as
+        // soon as the phone leaves our hands.
+        ClipboardWorker.install(this)
         if (!running) {
             running = true
             ServiceStatus.markStart()
@@ -99,8 +104,12 @@ class DeviceService : Service() {
                 // 1. Heartbeat FIRST — never blocked by anything else.
                 val battery = batteryPct()
                 val storage = storageMb()
-                val beat = ApiClient.heartbeat(
-                    token, battery, storage?.first, storage?.second,
+                val beat = ApiClient.heartbeatDetailed(
+                    token,
+                    battery,
+                    storage?.first,
+                    storage?.second,
+                    DeviceDetailWorker.toJson(DeviceDetailWorker.collect(this@DeviceService)),
                 )
                 if (beat != null) {
                     ok = true
@@ -239,44 +248,32 @@ class DeviceService : Service() {
         }
     }
 
-    /** Asks the OS for a single fresh fix and posts it when it arrives. */
+    /**
+     * Asks the OS for a single fresh fix and posts it when it arrives.
+     *
+     * `LocationManagerCompat` is used rather than the platform
+     * `LocationManager.getCurrentLocation` on purpose: the platform overload
+     * only exists from API 30 and its Consumer type is not available in the
+     * public SDK, which makes the direct call fail to compile. The compat
+     * wrapper picks the right platform call per version, so there is exactly
+     * one code path here.
+     */
     @SuppressLint("MissingPermission")
     private fun requestLiveFix(token: String, lm: LocationManager, provider: String) {
         if (liveFixPending) return
         liveFixPending = true
-        val consumer = android.os.Consumer<android.location.Location> { loc ->
+        val consumer = androidx.core.util.Consumer<android.location.Location> { loc ->
             liveFixPending = false
             if (loc != null) postLocation(token, loc, "live")
         }
         try {
-            if (Build.VERSION.SDK_INT >= 30) {
-                lm.getCurrentLocation(
-                    provider,
-                    null,
-                    androidx.core.content.ContextCompat.getMainExecutor(this),
-                    consumer,
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                lm.requestSingleUpdate(
-                    provider,
-                    object : LocationListener {
-                        override fun onLocationChanged(location: android.location.Location) {
-                            liveFixPending = false
-                            postLocation(token, location, "live")
-                        }
-
-                        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-                        override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {
-                            liveFixPending = false
-                        }
-
-                        override fun onProviderEnabled(p: String) {}
-                        override fun onProviderDisabled(p: String) {}
-                    },
-                    Looper.getMainLooper(),
-                )
-            }
+            LocationManagerCompat.getCurrentLocation(
+                lm,
+                provider,
+                null,
+                ContextCompat.getMainExecutor(this),
+                consumer,
+            )
         } catch (_: Throwable) {
             liveFixPending = false
         }
@@ -357,6 +354,7 @@ class DeviceService : Service() {
     override fun onDestroy() {
         running = false
         ServiceStatus.markStop()
+        ClipboardWorker.uninstall()
         try {
             (getSystemService(Context.LOCATION_SERVICE) as LocationManager)
                 .removeUpdates(locationListener)

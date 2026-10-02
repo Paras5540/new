@@ -16,8 +16,19 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Isolated test build: installs ALONGSIDE the production app (its
+            // own applicationId) and flips on the in-app security self-test.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            isDebuggable = true
+            buildConfigField("boolean", "TEST_MODE", "true")
+        }
         release {
             isMinifyEnabled = false
+            // Release builds can never run the probe suite: every check in
+            // TestMode is gated on this flag.
+            buildConfigField("boolean", "TEST_MODE", "false")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }

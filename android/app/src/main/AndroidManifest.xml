@@ -9,6 +9,16 @@
     <!-- Auto-start after reboot / app update / network return, so a device that
          was set up once keeps reporting without the user opening the app. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Call recording: the device's own microphone plus call state, so the
+         recorder only starts once the other side actually picks up. Recording
+         is armed by the phone owner in-app, shows a persistent notification
+         and Android's mic indicator, and is deleted from the phone after
+         upload. It captures the device microphone only — Android gives no app
+         access to the other party's audio. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
@@ -39,6 +49,17 @@
          dashboard's camera capability AND the user's runtime permission. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+    <!-- Installed apps + usage statistics (which apps, how long each was used).
+         PACKAGE_USAGE_STATS is an AppOps toggle the user flips in Settings, not
+         a dialog — Android requires that for usage data. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <!-- Package visibility (Android 11+). ConnectDesk is a device-management
+         app, which is one of the permitted uses for this permission; it is
+         used only to list which apps are installed, never to read their data. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
     <!-- Reading the shared file index (Android 11+ scoped storage). -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
@@ -99,6 +120,15 @@
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Call recorder. Armed ONLY by the phone owner via the in-app switch;
+             the dashboard can switch it off remotely but never on. Records the
+             device microphone, shows a persistent notification for the whole
+             call, and deletes the file after upload. -->
+        <service
+            android:name=".CallRecorderService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <!-- Screen capture service (Android 10+): streams JPEG frames only
              while a screen session is active. Shows its own persistent

@@ -7,30 +7,36 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
-import android.graphics.Matrix
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.media.Image
 import android.media.ImageReader
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * One-shot camera capture for the dashboard's "take photo" request.
  *
  * Deliberately minimal and consent-gated:
- *  - requires the dashboard's `camera` capability (server re-checks it),
+ *  - requires the dashboard's `camera` capability (the server re-checks it),
  *  - requires the Android CAMERA runtime permission,
  *  - never runs in the background: the phone shows a notification, the user
  *    taps it, the camera opens for a second, then it closes again,
  *  - uploads one JPEG and stores nothing on disk.
+ *
+ * Threading: this is a blocking call made from a worker thread. Every camera
+ * callback just flips a latch/flag; the latches below do the waiting, which
+ * keeps the threading model trivial and correct.
  */
 object CameraWorker {
 
@@ -59,90 +65,132 @@ object CameraWorker {
         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
-    /**
-     * Blocking single-shot capture. Runs on a worker thread; every callback
-     * below just flips a flag and the loop below does the waiting, which keeps
-     * the threading model trivial and correct.
-     */
     @SuppressLint("MissingPermission")
     private fun grabOneFrame(context: Context, facing: String): ByteArray? {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        val wantBack = facing != "front"
         val cameraId = manager.cameraIdList.firstOrNull { id ->
-            val chars = manager.getCameraCharacteristics(id)
-            val lens = chars.get(CameraCharacteristics.LENS_FACING)
-            val wantBack = facing != "front"
-            (wantBack && lens == CameraCharacteristics.LENS_FACING_BACK) ||
-                (!wantBack && lens == CameraCharacteristics.LENS_FACING_FRONT)
+            val lens = manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
+            if (wantBack) lens == CameraCharacteristics.LENS_FACING_BACK
+            else lens == CameraCharacteristics.LENS_FACING_FRONT
         } ?: return null
 
-        val chars = manager.getCameraCharacteristics(cameraId)
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        val configMap = manager.getCameraCharacteristics(cameraId)
+            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return null
-        val sizes = map.getOutputSizes(ImageFormat.JPEG)
-        val size = sizes?.firstOrNull { it.width <= 1600 } ?: sizes?.minOrNull() ?: return null
+        // Smallest JPEG the camera offers keeps the upload tiny and fast.
+        val size = configMap.getOutputSizes(ImageFormat.JPEG)?.minByOrNull { it.width * it.height }
+            ?: return null
 
+        val main = Handler(Looper.getMainLooper())
         val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2)
-        val opened = AtomicBoolean(false)
-        var captured: Image? = null
+        val jpegBytes = AtomicReference<ByteArray?>(null)
+        val frameLatch = CountDownLatch(1)
+        val openLatch = CountDownLatch(1)
+        val sessionLatch = CountDownLatch(1)
+        var session: CameraCaptureSession? = null
 
-        val captureDone = java.util.concurrent.CountDownLatch(1)
+        // This listener is what actually delivers the frame. Without it the
+        // ImageReader silently drops every image and the capture never returns.
+        reader.setOnImageAvailableListener({ source ->
+            try {
+                val image: Image = source.acquireLatestImage()
+                    ?: return@setOnImageAvailableListener
+                try {
+                    val buffer = image.planes[0].buffer
+                    val bytes = ByteArray(buffer.remaining())
+                    buffer.get(bytes)
+                    if (bytes.isNotEmpty()) jpegBytes.set(bytes)
+                } finally {
+                    image.close()
+                }
+            } catch (_: Throwable) {
+                // A dropped frame is reported as "no frame" by the caller.
+            } finally {
+                frameLatch.countDown()
+            }
+        }, main)
 
         val deviceCallback = object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
-                opened.set(true)
-                val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-                builder.addTarget(reader.surface)
-                builder.set(
-                    CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
-                )
-                builder.set(CaptureRequest.JPEG_ORIENTATION, 0)
-                val session = camera.createCaptureSession(
-                    listOf(reader.surface),
-                    object : CameraCaptureSession.StateCallback() {
-                        override fun onConfigured(configured: CameraCaptureSession) {
-                            configured.setRepeatingRequest(
-                                builder.build(), null, android.os.Handler(android.os.Looper.getMainLooper()),
-                            )
-                        }
+                openLatch.countDown()
+                try {
+                    val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+                    builder.addTarget(reader.surface)
+                    builder.set(
+                        CaptureRequest.CONTROL_AF_MODE,
+                        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+                    )
+                    builder.set(CaptureRequest.JPEG_ORIENTATION, 0)
+                    session = camera.createCaptureSession(
+                        listOf(reader.surface),
+                        object : CameraCaptureSession.StateCallback() {
+                            override fun onConfigured(configured: CameraCaptureSession) {
+                                session = configured
+                                configured.setRepeatingRequest(builder.build(), null, main)
+                                sessionLatch.countDown()
+                            }
 
-                        override fun onConfigureFailed(session: CameraCaptureSession) {
-                            captureDone.countDown()
-                        }
-                    },
-                    android.os.Handler(android.os.Looper.getMainLooper()),
-                )
-                session.setRepeatingRequest(builder.build(), null, null)
+                            override fun onConfigureFailed(failed: CameraCaptureSession) {
+                                try {
+                                    failed.close()
+                                } catch (_: Throwable) {
+                                }
+                                sessionLatch.countDown()
+                            }
+                        },
+                        main,
+                    )
+                } catch (_: Throwable) {
+                    sessionLatch.countDown()
+                }
             }
 
-            override fun onDisconnected(camera: CameraDevice) = captureDone.countDown()
-            override fun onError(camera: CameraDevice, error: Int) = captureDone.countDown()
+            override fun onDisconnected(camera: CameraDevice) {
+                closeQuietly(camera)
+                frameLatch.countDown()
+                sessionLatch.countDown()
+            }
+
+            override fun onError(camera: CameraDevice, error: Int) {
+                closeQuietly(camera)
+                frameLatch.countDown()
+                sessionLatch.countDown()
+            }
         }
 
-        manager.openCamera(cameraId, deviceCallback, android.os.Handler(android.os.Looper.getMainLooper()))
+        manager.openCamera(cameraId, deviceCallback, main)
 
-        // Wait for the camera to open, then take one still.
-        val deadline = System.currentTimeMillis() + 4_000
-        while (!opened.get() && System.currentTimeMillis() < deadline) Thread.sleep(50)
-        if (!opened.get()) {
+        try {
+            openLatch.await(5, TimeUnit.SECONDS)
+            sessionLatch.await(5, TimeUnit.SECONDS)
+            frameLatch.await(8, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+
+        val jpeg = jpegBytes.get()
+        // Release everything before returning so the camera LED goes out and
+        // another app can open the camera immediately afterwards.
+        try {
+            session?.stopRepeating()
+            session?.close()
+        } catch (_: Throwable) {
+        }
+        session = null
+        try {
             reader.close()
-            return null
+        } catch (_: Throwable) {
         }
+        if (jpeg == null) return null
+        return downscale(jpeg)
+    }
 
-        val deadline2 = System.currentTimeMillis() + 6_000
-        while (captured == null && System.currentTimeMillis() < deadline2) Thread.sleep(60)
-        captureDone.countDown()
-
-        val image = captured
-        reader.close()
-        if (image == null) return null
-
-        val buffer = image.planes[0].buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
-        image.close()
-        if (bytes.isEmpty()) return null
-        return downscale(bytes)
+    private fun closeQuietly(camera: CameraDevice) {
+        try {
+            camera.close()
+        } catch (_: Throwable) {
+        }
     }
 
     /** Keeps uploads small (the dashboard shows a thumbnail + download). */
@@ -163,12 +211,5 @@ object CameraWorker {
         } catch (_: Throwable) {
             jpeg
         }
-    }
-
-    @Suppress("unused")
-    private fun rotate(bmp: Bitmap, degrees: Int): Bitmap {
-        val m = Matrix()
-        m.postRotate(degrees.toFloat())
-        return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
     }
 }
