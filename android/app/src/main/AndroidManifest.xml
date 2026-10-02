@@ -1,13 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Internet: server API calls (heartbeat, status, notification sync) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Auto-start after reboot / app update / network return, so a device that
+         was set up once keeps reporting without the user opening the app. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+
     <!-- Notification sync: user grants Notification Listener access in Settings.
          Purpose explained in-app before the settings deep-link. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required to raise the screen-share consent prompt while the app is in
+         the background (Android 10+ blocks background activity launches). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- Data sync permissions: each is requested at runtime ONLY when the user
          enables that feature in the app, with an explanation screen first.
@@ -22,6 +34,14 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <!-- Camera: only ever opened for a single, on-request frame. Requires the
+         dashboard's camera capability AND the user's runtime permission. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <!-- Reading the shared file index (Android 11+ scoped storage). -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
     <application
         android:label="@string/app_name"
@@ -56,6 +76,29 @@
             android:name=".DeviceService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Auto-restart receiver: reboot, app update, and network return all
+             bring the sync service back without opening the app. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Camera consent host: opens for one frame only, on the user's tap. -->
+        <activity
+            android:name=".CameraConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <!-- Screen capture service (Android 10+): streams JPEG frames only
              while a screen session is active. Shows its own persistent

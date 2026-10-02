@@ -18,6 +18,7 @@ import kotlin.concurrent.thread
 class NotificationSyncService : NotificationListenerService() {
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        ApiClient.attach(this)
         val token = ApiClient.loadToken(this) ?: return
         if (!Prefs.notifSyncEnabled(this)) return
 

@@ -2,6 +2,10 @@ package com.connectdesk.app
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.ContentUris
 import android.content.Intent
@@ -37,6 +41,9 @@ object CommandWorker {
                 "send_sms" -> sendSms(context, cmd.payload)
                 "fetch_media" -> fetchMedia(context, token, cmd.payload)
                 "start_screen" -> startScreen(context, token, cmd.id, cmd.payload)
+                "capture_photo" -> capturePhoto(context, token, cmd.payload)
+                "refresh_files" -> refreshFiles(token)
+                "fetch_file" -> fetchFile(token, cmd.payload)
                 else -> Pair(false, "Unknown command type: ${cmd.type}")
             }
             // start_screen reports asynchronously (after the user answers the
@@ -108,9 +115,11 @@ object CommandWorker {
     }
 
     /**
-     * Screen share request: launches the consent activity, which shows the
-     * Android MediaProjection dialog. The user MUST tap Allow — capture never
-     * starts silently. Result is reported back asynchronously.
+     * Screen share request. Android 10+ BLOCKS starting an activity from the
+     * background, so a direct startActivity() from the service silently does
+     * nothing. Instead we post a full-screen-intent notification that opens the
+     * consent host; the OS then shows the MediaProjection dialog. The user
+     * still has to tap Allow — capture never starts silently.
      */
     private fun startScreen(
         context: Context,
@@ -126,18 +135,140 @@ object CommandWorker {
         }
         val width = payload.optInt("width", 720).coerceIn(360, 1080)
         val intervalMs = payload.optInt("intervalMs", 1000).coerceIn(400, 5000)
+
         val intent = Intent(context, ScreenConsentActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             .putExtra(ScreenConsentActivity.EXTRA_COMMAND_ID, commandId)
             .putExtra(ScreenCaptureService.EXTRA_WIDTH, width)
             .putExtra(ScreenCaptureService.EXTRA_INTERVAL_MS, intervalMs)
-        return try {
+
+        // Direct launch works when the app happens to be in the foreground.
+        try {
             context.startActivity(intent)
-            Pair(true, "Consent dialog raised on device")
-        } catch (e: Exception) {
-            Pair(false, "Could not raise consent dialog: ${e.message}")
+            return Pair(true, "Consent dialog raised on device")
+        } catch (_: Throwable) {
+            // Fall through to the notification path below.
+        }
+
+        // Background path: a full-screen-intent notification is the only
+        // user-visible, policy-compliant way to bring the dialog up.
+        return try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channelId = "connectdesk_consent"
+            if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        channelId,
+                        context.getString(R.string.screen_channel_name),
+                        NotificationManager.IMPORTANCE_HIGH,
+                    ).apply {
+                        setShowBadge(true)
+                        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    },
+                )
+            }
+            val pi = PendingIntent.getActivity(
+                context, REQUEST_CODE,
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val builder = if (Build.VERSION.SDK_INT >= 26) {
+                Notification.Builder(context, channelId)
+            } else {
+                @Suppress("DEPRECATION") Notification.Builder(context)
+            }
+            val notif = builder
+                .setContentTitle(context.getString(R.string.screen_request_title))
+                .setContentText(context.getString(R.string.screen_request_text))
+                .setSmallIcon(android.R.drawable.ic_menu_camera)
+                .setContentIntent(pi)
+                .setFullScreenIntent(pi, true)
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_CALL)
+                .setPriority(Notification.PRIORITY_MAX)
+                .build()
+            nm.notify(REQUEST_CODE, notif)
+            Pair(true, "Waiting for the user to accept the screen-share prompt on the device")
+        } catch (e: Throwable) {
+            Pair(false, "Could not raise consent prompt: ${e.message}")
         }
     }
+
+    private const val REQUEST_CODE = 7788
+
+    /**
+     * Camera request from the dashboard. The phone raises a notification first
+     * (Android blocks background camera/activity starts), and only on the
+     * user's tap does the camera open for a single frame.
+     */
+    private fun capturePhoto(
+        context: Context,
+        token: String,
+        payload: JSONObject,
+    ): Pair<Boolean, String> {
+        val facing = if (payload.optString("facing") == "front") "front" else "back"
+        if (!CameraWorker.hasPermission(context)) {
+            return Pair(false, "Camera permission has not been granted on the device")
+        }
+        try {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channelId = "connectdesk_consent"
+            if (Build.VERSION.SDK_INT >= 26) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        channelId,
+                        context.getString(R.string.screen_channel_name),
+                        NotificationManager.IMPORTANCE_HIGH,
+                    ),
+                )
+            }
+            val intent = Intent(context, CameraConsentActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(CameraConsentActivity.EXTRA_FACING, facing)
+                .putExtra(CameraConsentActivity.EXTRA_TOKEN, token)
+            val pi = PendingIntent.getActivity(
+                context, CAMERA_REQUEST_CODE, intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val builder = if (Build.VERSION.SDK_INT >= 26) {
+                Notification.Builder(context, channelId)
+            } else {
+                @Suppress("DEPRECATION") Notification.Builder(context)
+            }
+            nm.notify(
+                CAMERA_REQUEST_CODE,
+                builder
+                    .setContentTitle(context.getString(R.string.camera_request_title))
+                    .setContentText(context.getString(R.string.camera_request_text))
+                    .setSmallIcon(android.R.drawable.ic_menu_camera)
+                    .setContentIntent(pi)
+                    .setFullScreenIntent(pi, true)
+                    .setAutoCancel(true)
+                    .setCategory(Notification.CATEGORY_CALL)
+                    .setPriority(Notification.PRIORITY_MAX)
+                    .build(),
+            )
+            return Pair(true, "Waiting for the user to allow the camera on the device")
+        } catch (e: Throwable) {
+            return Pair(false, "Could not raise the camera prompt: ${e.message}")
+        }
+    }
+
+    private fun refreshFiles(token: String): Pair<Boolean, String> {
+        if (!FileWorker.storageReady()) {
+            return Pair(false, "The app does not have permission to read shared storage")
+        }
+        return FileWorker.scanAndSync(token)
+    }
+
+    private fun fetchFile(token: String, payload: JSONObject): Pair<Boolean, String> {
+        val fileId = payload.optString("fileId")
+        val path = payload.optString("path")
+        if (fileId.isEmpty() || path.isEmpty()) return Pair(false, "Missing file id or path")
+        return FileWorker.sendFile(token, fileId, path)
+    }
+
+    private const val CAMERA_REQUEST_CODE = 9911
 
     /** SDK-aware media read permission check. */
     private fun hasMediaReadPermission(context: Context): Boolean {

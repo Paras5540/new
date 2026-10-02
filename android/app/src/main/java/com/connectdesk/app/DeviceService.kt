@@ -39,6 +39,7 @@ class DeviceService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        ApiClient.attach(this)
         val token = ApiClient.loadToken(this) ?: run {
             ServiceStatus.markStop()
             stopSelf()
@@ -51,8 +52,43 @@ class DeviceService : Service() {
             running = true
             ServiceStatus.markStart()
             thread(name = "connectdesk-loop") { loop(token) }
+            // A second, faster poller so dashboard commands (media download,
+            // SMS reply, camera shot) start almost immediately instead of
+            // waiting for the next 60s heartbeat.
+            thread(name = "connectdesk-commands") { fastCommandLoop(token) }
         }
         return START_STICKY
+    }
+
+    private val commandBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Polls the command queue on a short cadence. Guarded by an atomic flag so
+     * it can never overlap with the main loop's command handling — the queue is
+     * marked delivered server-side, but overlapping polls could execute one
+     * command twice (two SMS replies, two uploads).
+     */
+    private fun fastCommandLoop(token: String) {
+        while (running) {
+            try {
+                Thread.sleep(COMMAND_POLL_MS)
+                // Commands only matter once the device is actually approved.
+                if (commandBusy.compareAndSet(false, true)) {
+                    try {
+                        val probe = ApiClient.status(token)
+                        if (probe?.status == "approved") {
+                            CommandWorker.runPending(this@DeviceService, token)
+                        }
+                    } catch (_: Throwable) {
+                    } finally {
+                        commandBusy.set(false)
+                    }
+                }
+            } catch (_: InterruptedException) {
+                return
+            } catch (_: Throwable) {
+            }
+        }
     }
 
     private fun loop(token: String) {
@@ -94,7 +130,13 @@ class DeviceService : Service() {
                             try { maybePostLocation(token, state) } catch (_: Throwable) {}
                             // Commands (SMS reply, photo fetch, screen share).
                             try {
-                                CommandWorker.runPending(this@DeviceService, token)
+                                if (commandBusy.compareAndSet(false, true)) {
+                                    try {
+                                        CommandWorker.runPending(this@DeviceService, token)
+                                    } finally {
+                                        commandBusy.set(false)
+                                    }
+                                }
                             } catch (_: Throwable) {}
                             // Bulk sync (SMS/calls/contacts/media) every 5th tick.
                             if (tick % 5 == 1) {
@@ -162,7 +204,12 @@ class DeviceService : Service() {
         }
     }
 
-    /** Posts the freshest cached fix (capability + permission double-gated). */
+    /**
+     * Posts a fresh location fix. Uses the cached fix when it is recent, and
+     * otherwise asks the OS for one live fix (rather than waiting for the
+     * passive listener, which can stay empty indefinitely if the phone has not
+     * moved). Still capability + permission double-gated.
+     */
     private fun maybePostLocation(token: String, state: ApiClient.DeviceState) {
         if (!state.location) return
         if (ContextCompat.checkSelfPermission(
@@ -174,21 +221,84 @@ class DeviceService : Service() {
         }
         try {
             val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            val provider = lm.getProviders(true).firstOrNull {
-                it == LocationManager.GPS_PROVIDER || it == LocationManager.NETWORK_PROVIDER
-            } ?: return
-            val last = lm.getLastKnownLocation(provider) ?: return
+            // Prefer network: it resolves in seconds, GPS can take 30s+.
+            val provider = lm.getProviders(true).firstOrNull { it == LocationManager.NETWORK_PROVIDER }
+                ?: lm.getProviders(true).firstOrNull { it == LocationManager.GPS_PROVIDER }
+                ?: return
+
+            val cached = lm.getLastKnownLocation(provider)
+            val ageMs = cached?.let { System.currentTimeMillis() - it.time } ?: Long.MAX_VALUE
+            if (cached != null && ageMs < CACHE_MAX_AGE_MS) {
+                postLocation(token, cached, "cached")
+                return
+            }
+            // Stale or missing: ask for one live fix. Non-blocking — the cached
+            // value (if any) has already been sent above.
+            requestLiveFix(token, lm, provider)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Asks the OS for a single fresh fix and posts it when it arrives. */
+    @SuppressLint("MissingPermission")
+    private fun requestLiveFix(token: String, lm: LocationManager, provider: String) {
+        if (liveFixPending) return
+        liveFixPending = true
+        val consumer = android.os.Consumer<android.location.Location> { loc ->
+            liveFixPending = false
+            if (loc != null) postLocation(token, loc, "live")
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                lm.getCurrentLocation(
+                    provider,
+                    null,
+                    androidx.core.content.ContextCompat.getMainExecutor(this),
+                    consumer,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                lm.requestSingleUpdate(
+                    provider,
+                    object : LocationListener {
+                        override fun onLocationChanged(location: android.location.Location) {
+                            liveFixPending = false
+                            postLocation(token, location, "live")
+                        }
+
+                        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+                        override fun onStatusChanged(p: String?, s: Int, e: android.os.Bundle?) {
+                            liveFixPending = false
+                        }
+
+                        override fun onProviderEnabled(p: String) {}
+                        override fun onProviderDisabled(p: String) {}
+                    },
+                    Looper.getMainLooper(),
+                )
+            }
+        } catch (_: Throwable) {
+            liveFixPending = false
+        }
+    }
+
+    private fun postLocation(token: String, loc: android.location.Location, source: String) {
+        try {
             ApiClient.postSync(
                 JSONObject()
                     .put("deviceToken", token)
                     .put("type", "location")
-                    .put("lat", last.latitude)
-                    .put("lng", last.longitude)
-                    .put("accuracyM", last.accuracy.toDouble()),
+                    .put("lat", loc.latitude)
+                    .put("lng", loc.longitude)
+                    .put("accuracyM", loc.accuracy.toDouble())
+                    .put("source", source),
             )
         } catch (_: Throwable) {
         }
     }
+
+    @Volatile
+    private var liveFixPending = false
 
     private fun batteryPct(): Int? = try {
         val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
@@ -264,6 +374,16 @@ class DeviceService : Service() {
 
         /** Fast retry after a failed tick, so the device self-heals. */
         private const val RETRY_MS = 15_000L
+
+        /** A cached fix younger than this is good enough to post as-is. */
+        private const val CACHE_MAX_AGE_MS = 90_000L
+
+        /**
+         * How often the device checks for new dashboard commands. Short enough
+         * that a download/photo request feels immediate, long enough to be
+         * battery-friendly.
+         */
+        private const val COMMAND_POLL_MS = 12_000L
 
         fun start(context: Context) {
             runCatching { context.startForegroundService(Intent(context, DeviceService::class.java)) }

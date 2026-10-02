@@ -13,6 +13,16 @@
     <string name="screen_channel_name">ConnectDesk screen sharing</string>
     <string name="share_button">Share my screen</string>
     <string name="share_stop_button">Stop sharing</string>
+    <string name="screen_request_title">Screen share request</string>
+    <string name="screen_request_text">Your dashboard is asking to view this screen. Tap to review and allow or deny — nothing is captured without your permission.</string>
+    <string name="camera_request_title">Camera request</string>
+    <string name="camera_request_text">Your dashboard asked for a photo. Tap to open the camera for one shot — nothing is saved on the phone.</string>
+    <string name="login_username_hint">Username</string>
+    <string name="login_password_hint">Password</string>
+    <string name="login_button">Sign in</string>
+    <string name="login_title">Sign in to your account</string>
+    <string name="login_explain">Use the same username and password as the web dashboard. A new account is created automatically on first sign-in.</string>
+    <string name="pair_or_login">Use a pairing code instead</string>
 
     <string name="pair_code_hint">Pairing code (from dashboard QR)</string>
     <string name="pair_button">Pair device</string>
