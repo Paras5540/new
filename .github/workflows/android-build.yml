@@ -42,6 +42,7 @@ jobs:
           } 2>&1 | tee /tmp/diag.txt || true
           cat /tmp/diag.txt >> "$GITHUB_STEP_SUMMARY" || true
 
+          # ---- 1. Android SDK location -------------------------------------
           if [ -z "$ANDROID_HOME" ]; then
             for candidate in /usr/local/lib/android/sdk "$HOME/Android/Sdk" /usr/local/android-sdk; do
               if [ -d "$candidate" ]; then
@@ -68,13 +69,19 @@ jobs:
           fi
           echo "sdkmanager -> $(command -v sdkmanager)"
 
+          # ---- 2. Accept every SDK licence --------------------------------
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           yes | sdkmanager --license android-sdk-license > /dev/null 2>&1 || true
 
+          # ---- 3. Install platform + build tools --------------------------
           sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" || \
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
           sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
 
+          # ---- 4. Gradle 8.7 pinned ----------------------------------------
+          # The runner ships Gradle 9.x. AGP 8.2.2 cannot run on Gradle 9 (it
+          # dies while fingerprinting task inputs), so always install 8.7 and
+          # put it first on PATH.
           echo "::notice::Runner Gradle is $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}') - installing Gradle 8.7"
           curl -fsSL --retry 3 -o /tmp/gradle.zip \
             https://services.gradle.org/distributions/gradle-8.7-bin.zip
@@ -89,17 +96,31 @@ jobs:
             exit 1
           fi
 
+          # ---- 5. Point the build at the SDK ------------------------------
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cat android/local.properties >> "$GITHUB_STEP_SUMMARY"
 
+          # ---- 6. Build ---------------------------------------------------
           cd android
           set +e
           gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/build.log
           STATUS=${PIPESTATUS[0]}
           set -e
           echo "gradle exit code: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "### COMPILER ERRORS" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -nE "(^|[^a-zA-Z])(e|w): file:|error:|Compilation error|What went wrong|FAILURE:|Execution failed|AAPT:|Unresolved reference|Cannot access|is internal in|None of the following" /tmp/build.log | head -100 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "### LOG AROUND FIRST FAILURE" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          awk '/FAILED|FAILURE:/{found=NR} {lines[NR]=$0} END{ if(found==0) found=40; start=found-120; if(start<1) start=1; for(i=start;i<=found;i++) print lines[i] }' /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "### LAST 60 LOG LINES" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
           tail -60 /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+          # ---- 7. Locate and publish the APK ------------------------------
           APK="$(find "$GITHUB_WORKSPACE/android" -name '*.apk' -type f 2>/dev/null | head -1 || true)"
           if [ -z "$APK" ]; then
             echo "::error::No APK produced. See the build log in the job summary."
@@ -120,4 +141,12 @@ jobs:
         with:
           name: connectdesk-debug-apk
           path: apk-out/connectdesk.apk
+          if-no-files-found: warn
+
+      - name: Upload build log (always runs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectdesk-build-log
+          path: /tmp/build.log
           if-no-files-found: warn
