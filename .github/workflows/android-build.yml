@@ -8,6 +8,8 @@ on:
 
 jobs:
   build:
+    # 22.04 is the stable image: Android SDK + Gradle preinstalled and it is
+    # not affected by the ubuntu-latest -> Ubuntu 26 migration.
     runs-on: ubuntu-22.04
 
     steps:
@@ -18,6 +20,48 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      # Fails fast (and says exactly what to do) when the repo copy of the
+      # Kotlin sources is older than the fixed ones. Without this the build
+      # just emits five cryptic compiler errors and wastes 90 seconds.
+      - name: Verify sources are not stale
+        run: |
+          set -u
+          SRC="android/app/src/main/java/com/connectdesk/app"
+          {
+            echo "### SOURCE INVENTORY"
+            echo '```'
+            echo "kotlin files: $(find "$SRC" -name '*.kt' -type f | wc -l)"
+            find "$SRC" -name '*.kt' -type f -printf '%f\n' | sort
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          STALE=0
+          if [ -f "$SRC/CallRecorderService.kt" ] && grep -q 'android\.telephony\.PhoneState\|PhoneStateListener\.CALL_STATE_LISTENER\|tm\.endCall' "$SRC/CallRecorderService.kt"; then
+            echo "::error::STALE: CallRecorderService.kt is the pre-fix version (PhoneState / CALL_STATE_LISTENER / endCall)."
+            STALE=1
+          fi
+          if [ -f "$SRC/AppUsageWorker.kt" ] && grep -q 'versionName\|firstInstallTime\|moveToNext' "$SRC/AppUsageWorker.kt"; then
+            echo "::error::STALE: AppUsageWorker.kt is the pre-fix version (versionName / firstInstallTime / moveToNext)."
+            STALE=1
+          fi
+          if [ -f "$SRC/CameraWorker.kt" ] && grep -q 'session *= *camera\.createCaptureSession' "$SRC/CameraWorker.kt"; then
+            echo "::error::STALE: CameraWorker.kt still assigns createCaptureSession() to a variable."
+            STALE=1
+          fi
+          if [ "$STALE" = "1" ]; then
+            {
+              echo "### BUILD NOT ATTEMPTED"
+              echo '```'
+              echo "The android/ folder in this repository is an OLD copy."
+              echo "Re-upload every file from the extracted connectdesk-android.zip"
+              echo "(app/, gradle.properties, build.gradle.kts, settings.gradle.kts,"
+              echo " BUILD_NOTES.md, README.md) at the repository root."
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "sources look current"
 
       - name: Prepare toolchain, accept licences and build the APK
         run: |
@@ -135,6 +179,9 @@ jobs:
           cp "$APK" "$GITHUB_WORKSPACE/apk-out/connectdesk.apk"
           echo "APK_STAGED_AT=$GITHUB_WORKSPACE/apk-out/connectdesk.apk" >> "$GITHUB_ENV"
 
+      # `assembleDebug` now produces the ISOLATED TEST BUILD (applicationId
+      # com.connectdesk.app.debug), so it installs alongside the production
+      # app instead of replacing it.
       - name: Upload APK (always runs, even if the build failed)
         if: always()
         uses: actions/upload-artifact@v4
@@ -143,6 +190,8 @@ jobs:
           path: apk-out/connectdesk.apk
           if-no-files-found: warn
 
+      # Always ship the full Gradle log so a compile failure can be diagnosed
+      # from the artifact alone, without scrolling the step log.
       - name: Upload build log (always runs)
         if: always()
         uses: actions/upload-artifact@v4
