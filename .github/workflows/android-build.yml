@@ -75,27 +75,19 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
           sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
 
-          NEED_GRADLE=1
-          if command -v gradle >/dev/null 2>&1; then
-            GMV="$(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}')"
-            echo "preinstalled gradle version: ${GMV:-unknown}"
-            GMN="$(echo "${GMV:-0.0}" | cut -d. -f1,2)"
-            if [ -n "$GMV" ]; then
-              LOWEST="8.2"
-              if [ "$(printf '%s\n%s\n' "$LOWEST" "$GMN" | sort -V | head -1)" = "$LOWEST" ]; then
-                NEED_GRADLE=0
-              fi
-            fi
+          echo "::notice::Runner Gradle is $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}') - installing Gradle 8.7"
+          curl -fsSL --retry 3 -o /tmp/gradle.zip \
+            https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          sudo unzip -q -o /tmp/gradle.zip -d /opt
+          echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
+          export PATH="/opt/gradle-8.7/bin:$PATH"
+          hash -r
+          echo "gradle binary in use: $(command -v gradle)" >> "$GITHUB_STEP_SUMMARY"
+          gradle --version 2>&1 | head -8 >> "$GITHUB_STEP_SUMMARY" || true
+          if ! gradle --version 2>/dev/null | grep -q '^Gradle 8\.'; then
+            echo "::error::Gradle 8.7 did not take effect - still $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}')"
+            exit 1
           fi
-          if [ "$NEED_GRADLE" = "1" ]; then
-            echo "::warning::Installing Gradle 8.7 (missing or older than 8.2)"
-            curl -fsSL --retry 3 -o /tmp/gradle.zip \
-              https://services.gradle.org/distributions/gradle-8.7-bin.zip
-            sudo unzip -q -o /tmp/gradle.zip -d /opt
-            echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
-            export PATH="/opt/gradle-8.7/bin:$PATH"
-          fi
-          gradle --version >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
 
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cat android/local.properties >> "$GITHUB_STEP_SUMMARY"
