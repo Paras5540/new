@@ -24,6 +24,7 @@ object ClipboardWorker {
 
     private val handler = Handler(Looper.getMainLooper())
     private var manager: ClipboardManager? = null
+    private var appContext: Context? = null
     private var installed = false
     private var lastText: String? = null
 
@@ -33,8 +34,9 @@ object ClipboardWorker {
     /** Starts watching. Safe to call repeatedly. */
     fun install(context: Context) {
         if (installed) return
-        val cm = context.applicationContext
-            .getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        val app = context.applicationContext
+        val cm = app.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        appContext = app
         manager = cm
         installed = true
         handler.post(poll)
@@ -44,6 +46,7 @@ object ClipboardWorker {
         if (!installed) return
         handler.removeCallbacks(poll)
         manager = null
+        appContext = null
         installed = false
         lastText = null
     }
@@ -51,10 +54,10 @@ object ClipboardWorker {
     private val poll = object : Runnable {
         override fun run() {
             val cm = manager
-            val app = cm?.context?.applicationContext
+            val app = appContext
             if (cm == null || app == null) return
             try {
-                if (Prefs.clipboardSyncEnabled(app) && canReadNow()) {
+                if (Prefs.clipboardSyncEnabled(app) && canReadNow(app)) {
                     readAndSend(app, cm)
                 }
             } catch (_: Throwable) {
@@ -71,9 +74,8 @@ object ClipboardWorker {
      * there". We check the keyguard explicitly so the poll loop can skip the
      * work entirely instead of asking every four seconds.
      */
-    private fun canReadNow(): Boolean = try {
-        val app = manager?.context?.applicationContext
-        val km = app?.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+    private fun canReadNow(app: Context): Boolean = try {
+        val km = app.getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
         km?.isKeyguardLocked != true
     } catch (_: Throwable) {
         false

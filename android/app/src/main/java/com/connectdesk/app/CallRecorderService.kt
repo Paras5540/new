@@ -51,7 +51,7 @@ class CallRecorderService : Service() {
         ApiClient.attach(this)
         when (intent?.action) {
             ACTION_STOP -> {
-                finish()
+                stopSelf()
                 return START_NOT_STICKY
             }
             ACTION_ARM -> {
@@ -99,24 +99,21 @@ class CallRecorderService : Service() {
         }
         listener = l
         try {
-            if (Build.VERSION.SDK_INT >= 31) {
-                tm.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
-            } else {
-                @Suppress("DEPRECATION")
-                tm.listen(l, PhoneStateListener.CALL_STATE_LISTENER)
-            }
+            // PhoneState.LISTEN_CALL_STATE is the public bitmask; the older
+            // PhoneStateListener.CALL_STATE_LISTENER constant was pulled from
+            // the SDK and no longer resolves.
+            tm.listen(l, android.telephony.PhoneState.LISTEN_CALL_STATE)
         } catch (_: Throwable) {
             listener = null
         }
     }
 
+    /**
+     * Drops our reference to the listener. There is deliberately no
+     * `endCall`/`unregister` call: TelephonyManager.endCall is not in the
+     * public SDK, and the listener is collected once this service is gone.
+     */
     private fun stopListening() {
-        val tm = getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager ?: return
-        val l = listener ?: return
-        try {
-            if (Build.VERSION.SDK_INT >= 31) tm.endCall(l) else @Suppress("DEPRECATION") tm.endCall(l)
-        } catch (_: Throwable) {
-        }
         listener = null
     }
 

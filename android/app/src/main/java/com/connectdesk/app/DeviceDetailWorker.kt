@@ -1,13 +1,10 @@
 package com.connectdesk.app
 
+import android.bluetooth.BluetoothManager
 import android.content.Context
-import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
-import android.os.BluetoothManager
-import android.os.Build
-import android.os.PowerManager
 import android.os.SystemClock
 import org.json.JSONObject
 
@@ -74,18 +71,24 @@ object DeviceDetailWorker {
     }
 
     /** Fine-grained transport type so the dashboard can say "5G", not "online". */
-    private fun networkType(context: Context): String? = try {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return null
-        when {
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
-            else -> "other"
+    private fun networkType(context: Context): String? {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+            if (caps == null) {
+                null
+            } else {
+                when {
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                    caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+                    else -> "other"
+                }
+            }
+        } catch (_: Throwable) {
+            null
         }
-    } catch (_: Throwable) {
-        null
     }
 
     private fun bluetoothOn(context: Context): Boolean = try {

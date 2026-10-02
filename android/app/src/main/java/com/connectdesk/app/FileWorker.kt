@@ -158,7 +158,7 @@ object FileWorker {
                     if (index >= total) break
                 }
             }
-            Pair(true, "Sent ${target.name()}")
+            Pair(true, "Sent ${target.name}")
         } catch (e: Throwable) {
             Pair(false, "Send failed: ${e.message}")
         }

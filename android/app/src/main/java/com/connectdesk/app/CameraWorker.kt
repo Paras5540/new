@@ -15,6 +15,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.Image
 import android.media.ImageReader
+import android.view.Surface
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -122,25 +123,32 @@ object CameraWorker {
                         CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
                     )
                     builder.set(CaptureRequest.JPEG_ORIENTATION, 0)
-                    session = camera.createCaptureSession(
-                        listOf(reader.surface),
-                        object : CameraCaptureSession.StateCallback() {
-                            override fun onConfigured(configured: CameraCaptureSession) {
-                                session = configured
+                    // The callback is bound to a named val with an explicit
+                    // type: inline object expressions here made overload
+                    // resolution ambiguous against the SessionConfiguration
+                    // variant of createCaptureSession.
+                    val sessionCallback = object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(configured: CameraCaptureSession) {
+                            session = configured
+                            try {
                                 configured.setRepeatingRequest(builder.build(), null, main)
-                                sessionLatch.countDown()
+                            } catch (_: Throwable) {
                             }
+                            sessionLatch.countDown()
+                        }
 
-                            override fun onConfigureFailed(failed: CameraCaptureSession) {
-                                try {
-                                    failed.close()
-                                } catch (_: Throwable) {
-                                }
-                                sessionLatch.countDown()
+                        override fun onConfigureFailed(failed: CameraCaptureSession) {
+                            try {
+                                failed.close()
+                            } catch (_: Throwable) {
                             }
-                        },
-                        main,
-                    )
+                            sessionLatch.countDown()
+                        }
+                    }
+                    val surfaces: List<Surface> = listOf(reader.surface)
+                    val created: CameraCaptureSession =
+                        camera.createCaptureSession(surfaces, sessionCallback, main)
+                    session = created
                 } catch (_: Throwable) {
                     sessionLatch.countDown()
                 }

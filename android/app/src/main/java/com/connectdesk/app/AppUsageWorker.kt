@@ -2,9 +2,11 @@ package com.connectdesk.app
 
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents
+import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
 import org.json.JSONArray
@@ -90,21 +92,22 @@ object AppUsageWorker {
         val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
         val since = System.currentTimeMillis() - WINDOW_DAYS * 24L * 60 * 60 * 1000
 
-        // UsageStatsManager knows about activity; merge it per package.
-        val stats = HashMap<String, UsageStatsManager.UsageStats?>()
+        // queryUsageStats returns a plain List<UsageStats>, not a cursor —
+        // iterate it directly and keep the most-used record per package.
+        val stats = HashMap<String, UsageStats>()
         if (usage != null) {
             try {
-                val us = usage.queryUsageStats(UsageStatsManager.INTERVAL_BEST, since)
-                while (us != null && us.moveToNext()) {
-                    val pkg = us.getString(usage.getColumnIndex(UsageStatsManager.PACKAGE_NAME_USAGE_STATS))
+                for (us in usage.queryUsageStats(UsageStatsManager.INTERVAL_BEST, since)) {
+                    val pkg = us.packageName
                     if (pkg.isNullOrEmpty()) continue
                     val prev = stats[pkg]
                     // Keep the most informative record we saw for this package.
-                    stats[pkg] = if (prev == null || (us.totalTimeInForeground > prev.totalTimeInForeground)) {
-                        us
-                    } else {
-                        prev
-                    }
+                    stats[pkg] =
+                        if (prev == null || us.totalTimeInForeground > prev.totalTimeInForeground) {
+                            us
+                        } else {
+                            prev
+                        }
                 }
             } catch (_: Throwable) {
                 // Fall through: we still push the package list.
