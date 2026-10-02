@@ -26,14 +26,22 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android platform and build tools
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
-
       - name: Show environment
         run: |
           java -version
           gradle --version
           echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+      # A fresh runner has no accepted SDK licences — without this the
+      # package install step fails with "licences have not been accepted".
+      - name: Accept Android SDK licences
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --licenses | tail -5 || true
+
+      - name: Install Android platform and build tools
+        run: sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Build debug APK
         working-directory: android
