@@ -21,8 +21,18 @@ import java.util.concurrent.TimeUnit
  */
 object ApiClient {
     // ConnectDesk backend (Convex HTTP actions serve at .convex.site).
-    // Production deploy ke baad is URL ko update karna hoga.
-    var BASE_URL: String = "https://valuable-goldfish-43.convex.site"
+    // MUST match the deployment the dashboard uses, otherwise pairing codes
+    // created on the dashboard will not exist here.
+    var BASE_URL: String = "https://admired-nightingale-732.convex.site"
+
+    /**
+     * Human-readable reason for the most recent failed request. The pairing
+     * screen shows this so the user knows whether it was a network problem,
+     * an expired/used code, or a backend mismatch — instead of one vague
+     * "pairing failed" message.
+     */
+    @Volatile
+    var lastError: String? = null
 
     private val json = "application/json; charset=utf-8".toMediaType()
     private val client = OkHttpClient.Builder()
@@ -37,10 +47,27 @@ object ApiClient {
             .build()
         return try {
             client.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                resp.body?.string()?.let { JSONObject(it) }
+                val raw = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    // Surface the backend's own reason (e.g. "Invalid pairing code",
+                    // "Pairing code expired") plus the HTTP status.
+                    val serverMsg = try {
+                        JSONObject(raw).optString("error").ifEmpty { JSONObject(raw).optString("message") }
+                    } catch (_: Exception) {
+                        ""
+                    }
+                    lastError = if (serverMsg.isNotEmpty()) {
+                        "$serverMsg (HTTP ${resp.code})"
+                    } else {
+                        "Server returned HTTP ${resp.code}"
+                    }
+                    return null
+                }
+                lastError = null
+                if (raw.isEmpty()) JSONObject() else JSONObject(raw)
             }
         } catch (e: Exception) {
+            lastError = "No connection to ${BASE_URL} — check internet"
             null
         }
     }
@@ -53,7 +80,12 @@ object ApiClient {
             .put("appVersion", BuildConfig.VERSION_NAME)
         val resp = post("/api/device/claim", body) ?: return null
         val token = resp.optString("deviceToken")
-        return if (token.isNotEmpty()) Pair(resp.optString("deviceId"), token) else null
+        if (token.isEmpty()) {
+            val reason = resp.optString("error").ifEmpty { resp.optString("message") }
+            lastError = if (reason.isNotEmpty()) reason else "Server did not return a device token"
+            return null
+        }
+        return Pair(resp.optString("deviceId"), token)
     }
 
     data class DeviceState(

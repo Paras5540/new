@@ -88,7 +88,8 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 btnPair.isEnabled = true
                 if (result == null) {
-                    tvStatus.text = "Pairing failed — check code and connection"
+                    // Show WHY: expired/used code, wrong deployment, or no network.
+                    tvStatus.text = ApiClient.lastError ?: "Pairing failed — check code and connection"
                     return@runOnUiThread
                 }
                 ApiClient.saveToken(this, result.second)
