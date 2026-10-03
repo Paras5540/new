@@ -1,196 +1,293 @@
-LOG AROUND FIRST FAILURE
-	at org.gradle.internal.execution.steps.PreCreateOutputParentsStep.execute(PreCreateOutputParentsStep.java:50)
-	at org.gradle.internal.execution.steps.PreCreateOutputParentsStep.execute(PreCreateOutputParentsStep.java:28)
-	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:67)
-	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:37)
-	at org.gradle.internal.execution.steps.BroadcastChangingOutputsStep.execute(BroadcastChangingOutputsStep.java:61)
-	at org.gradle.internal.execution.steps.BroadcastChangingOutputsStep.execute(BroadcastChangingOutputsStep.java:26)
-	at org.gradle.internal.execution.steps.CaptureOutputsAfterExecutionStep.execute(CaptureOutputsAfterExecutionStep.java:67)
-	at org.gradle.internal.execution.steps.CaptureOutputsAfterExecutionStep.execute(CaptureOutputsAfterExecutionStep.java:45)
-	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:40)
-	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:29)
-	at org.gradle.internal.execution.steps.BuildCacheStep.executeWithoutCache(BuildCacheStep.java:189)
-	at org.gradle.internal.execution.steps.BuildCacheStep.lambda$execute$1(BuildCacheStep.java:75)
-	at org.gradle.internal.Either$Right.fold(Either.java:175)
-	at org.gradle.internal.execution.caching.CachingState.fold(CachingState.java:62)
-	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:73)
-	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:48)
-	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:46)
-	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:35)
-	at org.gradle.internal.execution.steps.SkipUpToDateStep.executeBecause(SkipUpToDateStep.java:76)
-	at org.gradle.internal.execution.steps.SkipUpToDateStep.lambda$execute$2(SkipUpToDateStep.java:54)
-	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:54)
-	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:36)
-	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:37)
-	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:27)
-	at org.gradle.internal.execution.steps.ResolveIncrementalCachingStateStep.executeDelegate(ResolveIncrementalCachingStateStep.java:49)
-	at org.gradle.internal.execution.steps.ResolveIncrementalCachingStateStep.executeDelegate(ResolveIncrementalCachingStateStep.java:27)
-	at org.gradle.internal.execution.steps.AbstractResolveCachingStateStep.execute(AbstractResolveCachingStateStep.java:71)
-	at org.gradle.internal.execution.steps.AbstractResolveCachingStateStep.execute(AbstractResolveCachingStateStep.java:39)
-	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:65)
-	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:36)
-	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:106)
-	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:55)
-	at org.gradle.internal.execution.steps.AbstractCaptureStateBeforeExecutionStep.execute(AbstractCaptureStateBeforeExecutionStep.java:64)
-	at org.gradle.internal.execution.steps.AbstractCaptureStateBeforeExecutionStep.execute(AbstractCaptureStateBeforeExecutionStep.java:43)
-	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.executeWithNonEmptySources(AbstractSkipEmptyWorkStep.java:125)
-	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.execute(AbstractSkipEmptyWorkStep.java:61)
-	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.execute(AbstractSkipEmptyWorkStep.java:36)
-	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsStartedStep.execute(MarkSnapshottingInputsStartedStep.java:38)
-	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:36)
-	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:23)
-	at org.gradle.internal.execution.steps.HandleStaleOutputsStep.execute(HandleStaleOutputsStep.java:75)
-	at org.gradle.internal.execution.steps.HandleStaleOutputsStep.execute(HandleStaleOutputsStep.java:41)
-	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.lambda$execute$0(AssignMutableWorkspaceStep.java:35)
-	at org.gradle.api.internal.tasks.execution.TaskExecution$4.withWorkspace(TaskExecution.java:289)
-	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.execute(AssignMutableWorkspaceStep.java:31)
-	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.execute(AssignMutableWorkspaceStep.java:22)
-	at org.gradle.internal.execution.steps.ChoosePipelineStep.execute(ChoosePipelineStep.java:40)
-	at org.gradle.internal.execution.steps.ChoosePipelineStep.execute(ChoosePipelineStep.java:23)
-	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.lambda$execute$2(ExecuteWorkBuildOperationFiringStep.java:67)
-	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.execute(ExecuteWorkBuildOperationFiringStep.java:67)
-	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.execute(ExecuteWorkBuildOperationFiringStep.java:39)
-	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:46)
-	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:34)
-	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:48)
-	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:35)
-	at org.gradle.internal.execution.impl.DefaultExecutionEngine$1.execute(DefaultExecutionEngine.java:61)
-	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:127)
-	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:116)
-	at org.gradle.api.internal.tasks.execution.FinalizePropertiesTaskExecuter.execute(FinalizePropertiesTaskExecuter.java:46)
-	at org.gradle.api.internal.tasks.execution.ResolveTaskExecutionModeExecuter.execute(ResolveTaskExecutionModeExecuter.java:51)
-	at org.gradle.api.internal.tasks.execution.SkipTaskWithNoActionsExecuter.execute(SkipTaskWithNoActionsExecuter.java:57)
-	at org.gradle.api.internal.tasks.execution.SkipOnlyIfTaskExecuter.execute(SkipOnlyIfTaskExecuter.java:74)
-	at org.gradle.api.internal.tasks.execution.CatchExceptionTaskExecuter.execute(CatchExceptionTaskExecuter.java:36)
-	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.executeTask(EventFiringTaskExecuter.java:77)
-	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:55)
-	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:200)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:195)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
-	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
-	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter.execute(EventFiringTaskExecuter.java:52)
-	at org.gradle.execution.plan.LocalTaskNodeExecutor.execute(LocalTaskNodeExecutor.java:42)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:331)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:318)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.lambda$execute$0(DefaultTaskExecutionGraph.java:314)
-	at org.gradle.internal.operations.CurrentBuildOperationRef.with(CurrentBuildOperationRef.java:80)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:314)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:303)
-	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
-	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
-	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
-	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
-Caused by: org.jetbrains.kotlin.gradle.tasks.CompilationErrorException: Compilation error. See log for more details
-	at org.jetbrains.kotlin.gradle.tasks.TasksUtilsKt.throwExceptionIfCompilationFailed(tasksUtils.kt:20)
-	at org.jetbrains.kotlin.compilerRunner.GradleKotlinCompilerWork.run(GradleKotlinCompilerWork.kt:141)
-	at org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction.execute(GradleCompilerRunnerWithWorkers.kt:73)
-	at org.gradle.workers.internal.DefaultWorkerServer.execute(DefaultWorkerServer.java:63)
-	at org.gradle.workers.internal.NoIsolationWorkerFactory$1$1.create(NoIsolationWorkerFactory.java:66)
-	at org.gradle.workers.internal.NoIsolationWorkerFactory$1$1.create(NoIsolationWorkerFactory.java:62)
-	at org.gradle.internal.classloader.ClassLoaderUtils.executeInClassloader(ClassLoaderUtils.java:100)
-	at org.gradle.workers.internal.NoIsolationWorkerFactory$1.lambda$execute$0(NoIsolationWorkerFactory.java:62)
-	at org.gradle.workers.internal.AbstractWorker$1.call(AbstractWorker.java:44)
-	at org.gradle.workers.internal.AbstractWorker$1.call(AbstractWorker.java:41)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:200)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:195)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
-	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
-	at org.gradle.workers.internal.AbstractWorker.executeWrappedInBuildOperation(AbstractWorker.java:41)
-	at org.gradle.workers.internal.NoIsolationWorkerFactory$1.execute(NoIsolationWorkerFactory.java:59)
-	at org.gradle.workers.internal.DefaultWorkerExecutor.lambda$submitWork$0(DefaultWorkerExecutor.java:174)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner.runExecution(DefaultConditionalExecutionQueue.java:187)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner.access$700(DefaultConditionalExecutionQueue.java:120)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner$1.run(DefaultConditionalExecutionQueue.java:162)
-	at org.gradle.internal.Factories$1.create(Factories.java:31)
-	at org.gradle.internal.work.DefaultWorkerLeaseService.withLocks(DefaultWorkerLeaseService.java:264)
-	at org.gradle.internal.work.DefaultWorkerLeaseService.runAsWorkerThread(DefaultWorkerLeaseService.java:128)
-	at org.gradle.internal.work.DefaultWorkerLeaseService.runAsWorkerThread(DefaultWorkerLeaseService.java:133)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner.runBatch(DefaultConditionalExecutionQueue.java:157)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner.run(DefaultConditionalExecutionQueue.java:126)
-	... 2 more
+name: Build Android APK
 
+on:
+  push:
+    branches: [main]
+    paths: ["android/**", ".github/workflows/android-build.yml"]
+  workflow_dispatch:
 
-BUILD FAILED in 1m 26s
-LAST 60 LOG LINES
-	at org.gradle.api.internal.tasks.execution.CatchExceptionTaskExecuter.execute(CatchExceptionTaskExecuter.java:36)
-	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.executeTask(EventFiringTaskExecuter.java:77)
-	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:55)
-	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:200)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:195)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
-	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
-	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter.execute(EventFiringTaskExecuter.java:52)
-	at org.gradle.execution.plan.LocalTaskNodeExecutor.execute(LocalTaskNodeExecutor.java:42)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:331)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:318)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.lambda$execute$0(DefaultTaskExecutionGraph.java:314)
-	at org.gradle.internal.operations.CurrentBuildOperationRef.with(CurrentBuildOperationRef.java:80)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:314)
-	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:303)
-	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
-	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
-	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
-	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
-Caused by: org.jetbrains.kotlin.gradle.tasks.CompilationErrorException: Compilation error. See log for more details
-	at org.jetbrains.kotlin.gradle.tasks.TasksUtilsKt.throwExceptionIfCompilationFailed(tasksUtils.kt:20)
-	at org.jetbrains.kotlin.compilerRunner.GradleKotlinCompilerWork.run(GradleKotlinCompilerWork.kt:141)
-	at org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction.execute(GradleCompilerRunnerWithWorkers.kt:73)
-	at org.gradle.workers.internal.DefaultWorkerServer.execute(DefaultWorkerServer.java:63)
-	at org.gradle.workers.internal.NoIsolationWorkerFactory$1$1.create(NoIsolationWorkerFactory.java:66)
-	at org.gradle.workers.internal.NoIsolationWorkerFactory$1$1.create(NoIsolationWorkerFactory.java:62)
-	at org.gradle.internal.classloader.ClassLoaderUtils.executeInClassloader(ClassLoaderUtils.java:100)
-	at org.gradle.workers.internal.NoIsolationWorkerFactory$1.lambda$execute$0(NoIsolationWorkerFactory.java:62)
-	at org.gradle.workers.internal.AbstractWorker$1.call(AbstractWorker.java:44)
-	at org.gradle.workers.internal.AbstractWorker$1.call(AbstractWorker.java:41)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:200)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:195)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
-	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
-	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
-	at org.gradle.workers.internal.AbstractWorker.executeWrappedInBuildOperation(AbstractWorker.java:41)
-	at org.gradle.workers.internal.NoIsolationWorkerFactory$1.execute(NoIsolationWorkerFactory.java:59)
-	at org.gradle.workers.internal.DefaultWorkerExecutor.lambda$submitWork$0(DefaultWorkerExecutor.java:174)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner.runExecution(DefaultConditionalExecutionQueue.java:187)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner.access$700(DefaultConditionalExecutionQueue.java:120)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner$1.run(DefaultConditionalExecutionQueue.java:162)
-	at org.gradle.internal.Factories$1.create(Factories.java:31)
-	at org.gradle.internal.work.DefaultWorkerLeaseService.withLocks(DefaultWorkerLeaseService.java:264)
-	at org.gradle.internal.work.DefaultWorkerLeaseService.runAsWorkerThread(DefaultWorkerLeaseService.java:128)
-	at org.gradle.internal.work.DefaultWorkerLeaseService.runAsWorkerThread(DefaultWorkerLeaseService.java:133)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner.runBatch(DefaultConditionalExecutionQueue.java:157)
-	at org.gradle.internal.work.DefaultConditionalExecutionQueue$ExecutionRunner.run(DefaultConditionalExecutionQueue.java:126)
-	... 2 more
+jobs:
+  build:
+    # 22.04 is the stable image: Android SDK + Gradle preinstalled and it is
+    # not affected by the ubuntu-latest -> Ubuntu 26 migration.
+    runs-on: ubuntu-22.04
 
+    steps:
+      - uses: actions/checkout@v4
 
-BUILD FAILED in 1m 26s
-27 actionable tasks: 27 executed
-Job summary generated at run-time
-Annotations
-2 errors, 2 warnings, and 1 notice
-build
-Process completed with exit code 1.
-build
-No APK produced. See the build log in the job summary.
-build
-Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/upload-artifact@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
-build
-No files were found with the provided path: apk-out/connectdesk.apk. No artifacts will be uploaded.
-build
-Runner Gradle is 9.8.0 - installing Gradle 8.7
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Fails fast (and says exactly what to do) when the repo copy of the
+      # Kotlin sources is older than the fixed ones. Without this the build
+      # just emits five cryptic compiler errors and wastes 90 seconds.
+      - name: Verify sources are not stale
+        run: |
+          set -u
+          SRC="android/app/src/main/java/com/connectdesk/app"
+          {
+            echo "### SOURCE INVENTORY"
+            echo '```'
+            echo "kotlin files: $(find "$SRC" -name '*.kt' -type f | wc -l)"
+            find "$SRC" -name '*.kt' -type f -printf '%f\n' | sort
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Strip line comments first: the fixed CallRecorderService.kt still
+          # MENTIONS PhoneState inside an explanatory comment, so a naive grep
+          # would flag the good file as stale.
+          CODE() { sed 's://.*::' "$1" | grep -v '^[[:space:]]*\*' | grep -v '^[[:space:]]*/\*'; }
+
+          STALE=0
+          if [ -f "$SRC/CallRecorderService.kt" ] && CODE "$SRC/CallRecorderService.kt" | grep -qE 'android\.telephony\.PhoneState$|android\.telephony\.PhoneState[^L]|CALL_STATE_LISTENER|\.endCall\('; then
+            echo "::error::STALE: CallRecorderService.kt is the pre-fix version (PhoneState import / CALL_STATE_LISTENER / endCall)."
+            STALE=1
+          fi
+          if [ -f "$SRC/AppUsageWorker.kt" ] && CODE "$SRC/AppUsageWorker.kt" | grep -qE '\.versionName|\.firstInstallTime|\.moveToNext\('; then
+            echo "::error::STALE: AppUsageWorker.kt is the pre-fix version (versionName / firstInstallTime / moveToNext)."
+            STALE=1
+          fi
+          if [ -f "$SRC/CameraWorker.kt" ] && CODE "$SRC/CameraWorker.kt" | grep -qE '=[[:space:]]*camera\.createCaptureSession'; then
+            echo "::error::STALE: CameraWorker.kt still assigns createCaptureSession() to a variable."
+            STALE=1
+          fi
+          # ---- Positive checks: the fixed sources MUST contain these tokens.
+          # Absence-of-bad-pattern is unreliable, presence-of-good-pattern is
+          # not, so assert on the fix itself.
+          MISSING=0
+          REPORT=/tmp/stale-report.txt
+          : > "$REPORT"
+          need() { # need <file> <marker> <human label>
+            if [ ! -f "$SRC/$1" ]; then
+              echo "::error::MISSING FILE: $1 is not in the repository."
+              echo "MISSING FILE: $1" >> "$REPORT"
+              MISSING=1
+            elif ! grep -qF "$2" "$SRC/$1"; then
+              echo "::error::STALE: $1 does not contain \"$2\" ($3). This is the OLD version - re-upload it."
+              echo "STALE: $1 - missing marker: $2" >> "$REPORT"
+              MISSING=1
+            fi
+          }
+          need AppUsageWorker.kt 'val rows: List<UsageStats>' 'fixed UsageStats loop is missing'
+          need AppUsageWorker.kt 'for (us in rows)' 'fixed UsageStats loop is missing'
+          need AppUsageWorker.kt 'queryUsageStats(interval, beginTime, endTime)' '3-arg queryUsageStats overload is missing'
+          need CallRecorderService.kt 'PhoneStateListener.LISTEN_CALL_STATE' 'fixed call-state bitmask is missing'
+          need CameraWorker.kt 'val sessionCallback = object : CameraCaptureSession.StateCallback()' 'fixed capture-session callback is missing'
+          # FileWorker.kt drives the whole folder tree. Without the root-prefixed
+          # walk every top-level folder collapses into one flat list on the
+          # dashboard, which reads as "files are broken". Assert on the fix.
+          need FileWorker.kt 'walk(dir, dir.name, 0, arr)' 'folder tree walk does not keep the root folder prefix'
+          need FileWorker.kt 'put("path", dir.name)' 'root folder itself is not pushed as an entry'
+          need FileWorker.kt 'noiseRoots' 'folder walk is still on the old allow-list instead of the noise deny-list'
+          if [ -f "$SRC/FileWorker.kt" ] && grep -qF 'walk(dir, "", 0, arr)' "$SRC/FileWorker.kt"; then
+            echo "::error::STALE: FileWorker.kt still walks with an empty root prefix. Re-upload it."
+            echo "FileWorker.kt - walk(dir, \"\", 0, arr) still present" >> "$REPORT"
+            MISSING=1
+          fi
+          # The buffer inside scanAndSync() is `arr`; `out` used to be the name
+          # of walk()'s parameter. Mixing them up compiles nowhere and produced
+          # "Unresolved reference: out" - so assert the buffer names are not
+          # conflated any more.
+          need FileWorker.kt 'arr.put(' 'scanAndSync is not writing the root folder into its own buffer'
+          need FileWorker.kt 'sink: JSONArray' 'walk() buffer is not named sink'
+          if [ -f "$SRC/FileWorker.kt" ] && grep -qE '^[[:space:]]*out\.(put|length)\(' "$SRC/FileWorker.kt"; then
+            echo "::error::STALE: FileWorker.kt writes to \`out\` at statement level - that name only exists inside walk(). Use \`arr\`. Re-upload it."
+            echo "FileWorker.kt - statement-level out.put/out.length (should be arr)" >> "$REPORT"
+            MISSING=1
+          fi
+
+          # ---- Live-camera files: these change often, so check them by COUNT,
+          # not just by presence. A stale MainActivity.kt fails with dozens of
+          # confusing "Overload resolution ambiguity" errors because the same
+          # field is declared three times; counting makes that obvious.
+          if [ -f "$SRC/MainActivity.kt" ]; then
+            n=$(grep -c "private lateinit var switchCameraLive" "$SRC/MainActivity.kt" || true)
+            if [ "$n" != "1" ]; then
+              echo "::error::STALE: MainActivity.kt declares switchCameraLive $n times (must be 1). Re-upload MainActivity.kt."
+              echo "MainActivity.kt - switchCameraLive declared $n times (expected 1)" >> "$REPORT"
+              MISSING=1
+            fi
+            n=$(grep -c "switchCameraLive.setOnCheckedChangeListener" "$SRC/MainActivity.kt" || true)
+            if [ "$n" != "1" ]; then
+              echo "::error::STALE: MainActivity.kt has $n camera listeners (must be 1). Re-upload MainActivity.kt."
+              echo "MainActivity.kt - camera listener count $n (expected 1)" >> "$REPORT"
+              MISSING=1
+            fi
+            # The "connected" block used to repeat these three assignments three
+            # times. It still COMPILES (they are idempotent), so a compiler error
+            # never caught it - only a count does.
+            n=$(grep -c "switchCameraLive.isChecked = CameraLiveService.isArmed(this)" "$SRC/MainActivity.kt" || true)
+            if [ "$n" -gt 1 ]; then
+              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload MainActivity.kt."
+              echo "MainActivity.kt - camera-live 'connected' block repeated $n times (expected 1)" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+          if [ -f "$SRC/CameraLiveService.kt" ]; then
+            if grep -q "TEMPLATE_STREAMING" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt uses TEMPLATE_STREAMING, which does not exist in the Camera2 API. Re-upload it."
+              echo "CameraLiveService.kt - TEMPLATE_STREAMING is not a real Camera2 constant" >> "$REPORT"
+              MISSING=1
+            fi
+            if ! grep -q "CameraDevice.TEMPLATE_PREVIEW" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt missing CameraDevice.TEMPLATE_PREVIEW. Re-upload it."
+              echo "CameraLiveService.kt - missing CameraDevice.TEMPLATE_PREVIEW" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+
+          if [ "$STALE" = "1" ] || [ "$MISSING" = "1" ]; then
+            {
+              echo "### BUILD NOT ATTEMPTED"
+              echo '```'
+              echo "Exactly these files still need to be replaced:"
+              cat "$REPORT"
+              echo ""
+              echo "Re-upload them from the extracted connectdesk-android.zip"
+              echo "(app/, gradle.properties, build.gradle.kts, settings.gradle.kts,"
+              echo " BUILD_NOTES.md, README.md) at the repository root."
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "sources look current"
+
+      - name: Prepare toolchain, accept licences and build the APK
+        run: |
+          set -o pipefail
+          echo "===== DIAGNOSTIC REPORT ====="
+          {
+            echo "### Runner"
+            echo '```'
+            uname -a
+            echo '```'
+            echo "### Java"
+            echo '```'
+            java -version 2>&1 || echo "NO JAVA"
+            echo '```'
+            echo "### JAVA_HOME=$JAVA_HOME"
+            echo "### ANDROID_HOME=$ANDROID_HOME"
+            echo "### ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            echo "### Gradle"
+            echo '```'
+            gradle --version 2>&1 || echo "GRADLE NOT ON PATH"
+            echo '```'
+          } 2>&1 | tee /tmp/diag.txt || true
+          cat /tmp/diag.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+          # ---- 1. Android SDK location -------------------------------------
+          if [ -z "$ANDROID_HOME" ]; then
+            for candidate in /usr/local/lib/android/sdk "$HOME/Android/Sdk" /usr/local/android-sdk; do
+              if [ -d "$candidate" ]; then
+                echo "ANDROID_HOME=$candidate" >> "$GITHUB_ENV"
+                echo "ANDROID_SDK_ROOT=$candidate" >> "$GITHUB_ENV"
+                echo "export ANDROID_HOME=$candidate" >> "$GITHUB_ENV"
+                echo "export ANDROID_SDK_ROOT=$candidate" >> "$GITHUB_ENV"
+                break
+              fi
+            done
+          fi
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/tools/bin:$ANDROID_HOME/platform-tools"
+
+          if ! command -v sdkmanager >/dev/null 2>&1; then
+            echo "::warning::sdkmanager not found on PATH, trying known locations"
+            SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -1 || true)"
+            if [ -z "$SDKMANAGER" ]; then
+              echo "::error::Android SDK cmdline tools not found - install Android Studio once, or add cmdline-tools to the runner image."
+              exit 1
+            fi
+            export PATH="$(dirname "$SDKMANAGER"):$PATH"
+          fi
+          echo "sdkmanager -> $(command -v sdkmanager)"
+
+          # ---- 2. Accept every SDK licence --------------------------------
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          yes | sdkmanager --license android-sdk-license > /dev/null 2>&1 || true
+
+          # ---- 3. Install platform + build tools --------------------------
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" || \
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
+          sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
+
+          # ---- 4. Gradle 8.7 pinned ----------------------------------------
+          # The runner ships Gradle 9.x. AGP 8.2.2 cannot run on Gradle 9 (it
+          # dies while fingerprinting task inputs), so always install 8.7 and
+          # put it first on PATH.
+          echo "::notice::Runner Gradle is $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}') - installing Gradle 8.7"
+          curl -fsSL --retry 3 -o /tmp/gradle.zip \
+            https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          sudo unzip -q -o /tmp/gradle.zip -d /opt
+          echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
+          export PATH="/opt/gradle-8.7/bin:$PATH"
+          hash -r
+          echo "gradle binary in use: $(command -v gradle)" >> "$GITHUB_STEP_SUMMARY"
+          gradle --version 2>&1 | head -8 >> "$GITHUB_STEP_SUMMARY" || true
+          if ! gradle --version 2>/dev/null | grep -q '^Gradle 8\.'; then
+            echo "::error::Gradle 8.7 did not take effect - still $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}')"
+            exit 1
+          fi
+
+          # ---- 5. Point the build at the SDK ------------------------------
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          cat android/local.properties >> "$GITHUB_STEP_SUMMARY"
+
+          # ---- 6. Build ---------------------------------------------------
+          cd android
+          set +e
+          gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/build.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          echo "gradle exit code: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "### COMPILER ERRORS" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -nE "(^|[^a-zA-Z])(e|w): file:|error:|Compilation error|What went wrong|FAILURE:|Execution failed|AAPT:|Unresolved reference|Cannot access|is internal in|None of the following" /tmp/build.log | head -100 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "### LOG AROUND FIRST FAILURE" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          awk '/FAILED|FAILURE:/{found=NR} {lines[NR]=$0} END{ if(found==0) found=40; start=found-120; if(start<1) start=1; for(i=start;i<=found;i++) print lines[i] }' /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "### LAST 60 LOG LINES" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -60 /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          # ---- 7. Locate and publish the APK ------------------------------
+          APK="$(find "$GITHUB_WORKSPACE/android" -name '*.apk' -type f 2>/dev/null | head -1 || true)"
+          if [ -z "$APK" ]; then
+            echo "::error::No APK produced. See the build log in the job summary."
+            exit 1
+          fi
+          APK_SIZE=$(stat -c%s "$APK")
+          echo "### APK" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$APK - $APK_SIZE bytes" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$GITHUB_WORKSPACE/apk-out"
+          cp "$APK" "$GITHUB_WORKSPACE/apk-out/connectdesk.apk"
+          echo "APK_STAGED_AT=$GITHUB_WORKSPACE/apk-out/connectdesk.apk" >> "$GITHUB_ENV"
+
+      # `assembleDebug` now produces the ISOLATED TEST BUILD (applicationId
+      # com.connectdesk.app.debug), so it installs alongside the production
+      # app instead of replacing it.
+      - name: Upload APK (always runs, even if the build failed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectdesk-debug-apk
+          path: apk-out/connectdesk.apk
+          if-no-files-found: warn
+
+      # Always ship the full Gradle log so a compile failure can be diagnosed
+      # from the artifact alone, without scrolling the step log.
+      - name: Upload build log (always runs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectdesk-build-log
+          path: /tmp/build.log
+          if-no-files-found: warn
