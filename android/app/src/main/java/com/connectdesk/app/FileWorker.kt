@@ -68,7 +68,7 @@ object FileWorker {
                 // root folder collapsed into one flat list with no names --
                 // Download/IMG.jpg and Documents/notes.txt both arrived as
                 // "IMG.jpg" / "notes.txt", and the dashboard had no tree at all.
-                out.put(
+                arr.put(
                     JSONObject()
                         .put("path", dir.name)
                         .put("name", dir.name)
@@ -95,7 +95,7 @@ object FileWorker {
         dir: File,
         relative: String,
         depth: Int,
-        out: JSONArray,
+        sink: JSONArray,
         keepGoing: () -> Boolean,
     ) {
         if (depth > MAX_DEPTH) return
@@ -105,7 +105,7 @@ object FileWorker {
             val rel = if (relative.isEmpty()) child.name else "$relative/${child.name}"
             if (child.isHidden) continue
             try {
-                out.put(
+                sink.put(
                     JSONObject()
                         .put("path", rel)
                         .put("name", child.name)
