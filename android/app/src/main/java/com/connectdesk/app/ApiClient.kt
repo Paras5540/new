@@ -27,13 +27,32 @@ object ApiClient {
     val BASE_URL: String
         get() = Backend.active ?: Backend.candidates.first()
 
-    /** Probes a candidate deployment: any HTTP answer proves it is alive. */
+    /**
+     * Probes a candidate deployment.
+     *
+     * The previous version returned true for ANY HTTP answer, which is far too
+     * weak: a Convex deployment with no `http.ts` pushed still answers, just
+     * with plain text. Picking such a deployment looks alive but can never
+     * complete a pairing, and the user only sees "Invalid pairing code".
+     *
+     * So the probe now asserts on OUR OWN response shape. `/api/device/status`
+     * with an unknown token answers `{"error":"Unknown device token"}`, which
+     * can only come from a deployment that actually has these routes.
+     */
     private fun probe(url: String): Boolean = try {
         val request = Request.Builder()
-            .url("$url/api/device/commands")
+            .url("$url/api/device/status")
             .post(JSONObject().put("deviceToken", "probe").toString().toRequestBody(json))
             .build()
-        client.newCall(request).execute().use { true }
+        client.newCall(request).execute().use { resp ->
+            val raw = resp.body?.string().orEmpty()
+            try {
+                val obj = JSONObject(raw)
+                obj.has("error") || obj.has("deviceId")
+            } catch (_: Exception) {
+                false
+            }
+        }
     } catch (_: Exception) {
         false
     }
@@ -133,14 +152,32 @@ object ApiClient {
             .put("deviceName", deviceName)
             .put("osVersion", android.os.Build.VERSION.RELEASE)
             .put("appVersion", BuildConfig.VERSION_NAME)
-        val resp = post("/api/device/claim", body) ?: return null
-        val token = resp.optString("deviceToken")
+
+        var resp = post("/api/device/claim", body)
+
+        // A reachable backend that says "Invalid pairing code" for a code the
+        // dashboard just generated is the classic signature of a DEPLOYMENT
+        // MISMATCH: the code was written on one Convex deployment and we read
+        // it from another. Rotate to the next candidate and try once more
+        // before telling the user their code is wrong.
+        if (resp == null) {
+            val reason = lastError ?: ""
+            if (reason.contains("Invalid pairing code")) {
+                val ctx = appContext
+                if (ctx != null && Backend.rotate(ctx)) {
+                    resp = post("/api/device/claim", body)
+                }
+            }
+        }
+
+        val result = resp ?: return null
+        val token = result.optString("deviceToken")
         if (token.isEmpty()) {
-            val reason = resp.optString("error").ifEmpty { resp.optString("message") }
-            lastError = if (reason.isNotEmpty()) reason else "Server did not return a device token"
+            val why = result.optString("error").ifEmpty { result.optString("message") }
+            lastError = if (why.isNotEmpty()) why else "Server did not return a device token"
             return null
         }
-        return Pair(resp.optString("deviceId"), token)
+        return Pair(result.optString("deviceId"), token)
     }
 
     data class DeviceState(

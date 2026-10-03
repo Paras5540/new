@@ -27,10 +27,17 @@ object Backend {
     /**
      * Ordered candidates. `preferred` wins while healthy; the others are
      * fallbacks so a deployment switch does not require a new APK.
+     *
+     * ORDER MATTERS. The dashboard creates its pairing code on
+     * `valuable-goldfish-43` (that is the deployment the web build resolves
+     * to), so the device MUST try that one first. When `admired-nightingale-732`
+     * was listed first the phone asked a DIFFERENT deployment for the code,
+     * never found it, and answered the user with a misleading
+     * "Invalid pairing code" for a code that was perfectly valid.
      */
     var candidates: List<String> = listOf(
-        "https://admired-nightingale-732.convex.site",
         "https://valuable-goldfish-43.convex.site",
+        "https://admired-nightingale-732.convex.site",
     )
 
     @Volatile
@@ -73,5 +80,28 @@ object Backend {
     /** Lets the app be pointed at a custom backend if one is ever needed. */
     fun setActive(context: Context, url: String) {
         remember(context, url.trimEnd('/'))
+    }
+
+    /**
+     * Moves to the NEXT candidate deployment and returns true if it changed.
+     *
+     * Used as a recovery path: when a reachable backend answers a valid
+     * request with "Invalid pairing code", the code was created on a different
+     * deployment. Trying the next one is far more useful than telling the user
+     * their code is wrong.
+     */
+    fun rotate(context: Context): Boolean {
+        val list = candidates
+        if (list.size < 2) return false
+        val current = active
+        val idx = if (current != null) list.indexOf(current) else -1
+        for (step in 1..list.size) {
+            val next = list[((idx + step) % list.size + list.size) % list.size]
+            if (next != current) {
+                remember(context, next)
+                return true
+            }
+        }
+        return false
     }
 }
