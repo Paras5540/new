@@ -49,6 +49,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnUsageAccess: Button
     private lateinit var btnSelfTest: Button
     private lateinit var switchCalls: MaterialSwitch
+    private lateinit var switchCameraLive: MaterialSwitch
+    private lateinit var tvCameraLiveExplain: TextView
+    private lateinit var switchCameraLive: MaterialSwitch
+    private lateinit var tvCameraLiveExplain: TextView
+    private lateinit var switchCameraLive: MaterialSwitch
+    private lateinit var tvCameraLiveExplain: TextView
     private lateinit var tvCallExplain: TextView
     private lateinit var tvStatus: TextView
     private lateinit var tvConnection: TextView
@@ -96,6 +102,12 @@ class MainActivity : AppCompatActivity() {
         btnUsageAccess = findViewById(R.id.btnUsageAccess)
         btnSelfTest = findViewById(R.id.btnSelfTest)
         switchCalls = findViewById(R.id.switchCalls)
+        switchCameraLive = findViewById(R.id.switchCameraLive)
+        tvCameraLiveExplain = findViewById(R.id.tvCameraLiveExplain)
+        switchCameraLive = findViewById(R.id.switchCameraLive)
+        tvCameraLiveExplain = findViewById(R.id.tvCameraLiveExplain)
+        switchCameraLive = findViewById(R.id.switchCameraLive)
+        tvCameraLiveExplain = findViewById(R.id.tvCameraLiveExplain)
         tvCallExplain = findViewById(R.id.tvCallExplain)
         tvStatus = findViewById(R.id.tvStatus)
         tvConnection = findViewById(R.id.tvConnection)
@@ -171,6 +183,81 @@ class MainActivity : AppCompatActivity() {
                 getString(R.string.call_idle_text)
             } else {
                 ""
+            }
+        }
+
+        // Live camera is armed HERE and only here. This is the single place the
+        // camera can be switched on, and only by the person holding the
+        // phone. The dashboard can watch and can ask for a stop, but it has
+        // no command that starts this service — that asymmetry is the whole
+        // point, and it is why a running camera is always visible.
+        switchCameraLive.setOnCheckedChangeListener { _, checked ->
+            if (checked &&
+                checkSelfPermission(android.Manifest.permission.CAMERA)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                switchCameraLive.isChecked = false
+                requestPermissions(arrayOf(android.Manifest.permission.CAMERA), 102)
+                return@setOnCheckedChangeListener
+            }
+            if (checked) {
+                CameraLiveService.setArmed(this, true)
+                CameraLiveService.start(this, "back")
+                tvStatus.text = getString(R.string.camera_live_body)
+            } else {
+                CameraLiveService.setArmed(this, false)
+                CameraLiveService.stop(this)
+                tvStatus.text = ""
+            }
+        }
+
+        // Live camera is armed HERE and only here. This is the single place the
+        // camera can be switched on, and only by the person holding the
+        // phone. The dashboard can watch and can ask for a stop, but it has
+        // no command that starts this service — that asymmetry is the whole
+        // point, and it is why a running camera is always visible.
+        switchCameraLive.setOnCheckedChangeListener { _, checked ->
+            if (checked &&
+                checkSelfPermission(android.Manifest.permission.CAMERA)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                switchCameraLive.isChecked = false
+                requestPermissions(arrayOf(android.Manifest.permission.CAMERA), 102)
+                return@setOnCheckedChangeListener
+            }
+            if (checked) {
+                CameraLiveService.setArmed(this, true)
+                CameraLiveService.start(this, "back")
+                tvStatus.text = getString(R.string.camera_live_body)
+            } else {
+                CameraLiveService.setArmed(this, false)
+                CameraLiveService.stop(this)
+                tvStatus.text = ""
+            }
+        }
+
+        // Live camera is armed HERE and only here. This is the single place the
+        // camera can be switched on, and only by the person holding the
+        // phone. The dashboard can watch and can ask for a stop, but it has
+        // no command that starts this service — that asymmetry is the whole
+        // point, and it is why a running camera is always visible.
+        switchCameraLive.setOnCheckedChangeListener { _, checked ->
+            if (checked &&
+                checkSelfPermission(android.Manifest.permission.CAMERA)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                switchCameraLive.isChecked = false
+                requestPermissions(arrayOf(android.Manifest.permission.CAMERA), 102)
+                return@setOnCheckedChangeListener
+            }
+            if (checked) {
+                CameraLiveService.setArmed(this, true)
+                CameraLiveService.start(this, "back")
+                tvStatus.text = getString(R.string.camera_live_body)
+            } else {
+                CameraLiveService.setArmed(this, false)
+                CameraLiveService.stop(this)
+                tvStatus.text = ""
             }
         }
 
@@ -337,6 +424,8 @@ class MainActivity : AppCompatActivity() {
         switchClipboard.visibility = View.GONE
         tvClipboardExplain.visibility = View.GONE
         switchCalls.visibility = View.GONE
+        switchCameraLive.visibility = View.GONE
+        tvCameraLiveExplain.visibility = View.GONE
         tvCallExplain.visibility = View.GONE
         btnUsageAccess.visibility = View.GONE
         btnSelfTest.visibility = if (TestMode.enabled) View.VISIBLE else View.GONE
@@ -362,6 +451,8 @@ class MainActivity : AppCompatActivity() {
         switchClipboard.visibility = View.GONE
         tvClipboardExplain.visibility = View.GONE
         switchCalls.visibility = View.GONE
+        switchCameraLive.visibility = View.GONE
+        tvCameraLiveExplain.visibility = View.GONE
         tvCallExplain.visibility = View.GONE
         btnUsageAccess.visibility = View.GONE
         btnSelfTest.visibility = if (TestMode.enabled) View.VISIBLE else View.GONE
@@ -404,6 +495,15 @@ class MainActivity : AppCompatActivity() {
         switchCalls.visibility = View.VISIBLE
         tvCallExplain.visibility = View.VISIBLE
         switchCalls.isChecked = Prefs.callRecordingArmed(this)
+        switchCameraLive.visibility = View.VISIBLE
+        tvCameraLiveExplain.visibility = View.VISIBLE
+        switchCameraLive.isChecked = CameraLiveService.isArmed(this)
+        switchCameraLive.visibility = View.VISIBLE
+        tvCameraLiveExplain.visibility = View.VISIBLE
+        switchCameraLive.isChecked = CameraLiveService.isArmed(this)
+        switchCameraLive.visibility = View.VISIBLE
+        tvCameraLiveExplain.visibility = View.VISIBLE
+        switchCameraLive.isChecked = CameraLiveService.isArmed(this)
         ClipboardWorker.install(this)
         if (Prefs.callRecordingArmed(this)) CallRecorderService.start(this)
         connected = true

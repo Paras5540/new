@@ -237,7 +237,12 @@ object Prefs {
 
     fun notifSyncEnabled(context: android.content.Context): Boolean =
         context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
-            .getBoolean(KEY_NOTIF, false)
+            // Defaults to ON for the same reason as chats: the dashboard's
+            // per-device `notifications` capability is the real consent gate,
+            // and this default only decides what a phone sends BEFORE anyone
+            // has touched the toggle. Was `false`, which meant the
+            // Notifications page stayed empty on a freshly paired device.
+            .getBoolean(KEY_NOTIF, true)
 
     fun setNotifSync(context: android.content.Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
@@ -251,7 +256,14 @@ object Prefs {
      */
     fun chatsSyncEnabled(context: android.content.Context): Boolean =
         context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
-            .getBoolean(KEY_CHATS, false)
+            // Defaults to ON so a paired device starts delivering chats as
+            // soon as the dashboard enables the `chats` capability. It was
+            // `false`, which meant a freshly paired phone silently synced
+            // nothing and the Chats page looked permanently empty. The
+            // dashboard's per-device `chats` capability still has to be on,
+            // and notification access is still required, so this is not a
+            // blanket opt-out of consent.
+            .getBoolean(KEY_CHATS, true)
 
     fun setChatsSync(context: android.content.Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)

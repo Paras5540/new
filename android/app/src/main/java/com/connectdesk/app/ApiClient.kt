@@ -484,6 +484,31 @@ object ApiClient {
         return resp.optString("status") == "stored"
     }
 
+    /**
+     * Uploads one frame of the LIVE camera stream.
+     *
+     * Unlike `uploadCameraPhoto` this does NOT create a stored media item —
+     * frames are transient. The server keeps only the newest frame per
+     * device, so streaming a live camera does not fill storage.
+     */
+    fun postCameraFrame(
+        token: String,
+        dataB64: String,
+        width: Int,
+        height: Int,
+        seq: Int,
+    ): Boolean {
+        val body = JSONObject()
+            .put("deviceToken", token)
+            .put("dataB64", dataB64)
+            .put("width", width)
+            .put("height", height)
+            .put("seq", seq)
+        val resp = post("/api/device/camera/frame", body) ?: return false
+        val s = resp.optString("status")
+        return s == "stored" || s == "no_session" || s == "disabled"
+    }
+
     // ---- local token persistence (per-app private storage) ----
     private const val PREFS = "connectdesk"
     private const val KEY_TOKEN = "deviceToken"

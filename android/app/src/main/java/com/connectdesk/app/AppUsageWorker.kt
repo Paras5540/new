@@ -58,10 +58,38 @@ object AppUsageWorker {
         false
     }
 
-    /** Settings intent for the Usage-access toggle. */
+    /** Today's date in the device's own timezone as `YYYY-MM-DD`. */
+    fun todayLocal(): String {
+        val cal = java.util.Calendar.getInstance()
+        val y = cal.get(java.util.Calendar.YEAR)
+        val m = cal.get(java.util.Calendar.MONTH) + 1
+        val d = cal.get(java.util.Calendar.DAY_OF_MONTH)
+        return String.format("%04d-%02d-%02d", y, m, d)
+    }
+
+    /**
+     * Settings intent for the Usage-access toggle.
+     *
+     * Two things were making the user get bounced back instead of landing on
+     * the Usage-access screen:
+     *
+     *  1. Without `data = package:<us>` the Settings app opens the generic
+     *     usage-access list. On many OEM builds that list only refreshes its
+     *     state when the returning app declares the package it wants, so the
+     *     toggle appears to revert and the user is sent back.
+     *  2. `FLAG_ACTIVITY_NEW_TASK` started Settings as a NEW task on top of
+     *     ours, so pressing Back returned to wherever that task happened to
+     *     start — not to the app that asked. Launching as a child of the
+     *     current task keeps the back stack correct.
+     */
     fun usageAccessIntent(): android.content.Intent =
-        android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS)
-            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        android.content.Intent(android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS).apply {
+            data = android.net.Uri.parse("package:${BuildConfig.APPLICATION_ID}")
+            // Explicitly NOT NEW_TASK: Settings must sit on the current task
+            // so Back returns here rather than dumping the user at whatever
+            // the launcher had behind us.
+            addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
 
     fun sync(context: Context, token: String): Pair<Boolean, String> {
         if (!hasUsageAccess(context)) {
@@ -74,6 +102,10 @@ object AppUsageWorker {
                     JSONObject()
                         .put("deviceToken", token)
                         .put("type", "apps")
+                        // Local calendar day, so the dashboard can file this
+                        // snapshot under the day the PHONE is on and show a
+                        // real 30-day history instead of only today.
+                        .put("day", todayLocal())
                         .put("apps", array),
                 )
             ) {

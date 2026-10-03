@@ -107,6 +107,15 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <!--
+                    BootReceiver also handles CONNECTIVITY_CHANGE, but it was
+                    only implemented in code and never declared here. On
+                    Android 8+ an implicit broadcast with no manifest entry is
+                    NOT delivered, so the service stayed dead after the phone
+                    dropped Wi-Fi and came back - the dashboard would show the
+                    device offline until the app was opened by hand.
+                -->
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
@@ -138,6 +147,18 @@
             android:name=".ScreenCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <!--
+             Live camera streaming. Armed ONLY by the phone owner from the
+             app's own UI; the dashboard can request a stop but can never
+             start it. While it runs it must hold the CAMERA foreground
+             service type, and Android shows a permanent notification for
+             that, which is the visible consent signal.
+        -->
+        <service
+            android:name=".CameraLiveService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
 
         <!-- Notification listener: syncs notifications to the dashboard, only
              while the user enabled it AND the dashboard toggle is on. Content

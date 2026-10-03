@@ -47,4 +47,14 @@
     <string name="call_idle_text">Waiting for a call. Recording covers your microphone only.</string>
     <string name="open_notif_settings">Grant notification access</string>
     <string name="channel_name">ConnectDesk status</string>
+
+    <!-- Live camera: the persistent indicator shown while streaming is on. -->
+    <string name="camera_live_channel_name">Camera live</string>
+    <string name="camera_live_title">Camera is live</string>
+    <string name="camera_live_body">Your camera is streaming to the dashboard. Tap Stop to turn it off.</string>
+    <string name="camera_live_stop">Stop</string>
+
+    <!-- Live camera toggle in the app. Spells out the consent model. -->
+    <string name="camera_live_toggle">Turn on live camera</string>
+    <string name="camera_live_toggle_explain">Your camera streams to your dashboard while this is on. A permanent notification stays visible the whole time and you can stop it from there or from this screen. ConnectDesk never turns the camera on by itself — only you can, from here.</string>
 </resources>
