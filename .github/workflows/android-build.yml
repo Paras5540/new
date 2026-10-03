@@ -93,10 +93,112 @@ jobs:
           # conflated any more.
           need FileWorker.kt 'arr.put(' 'scanAndSync is not writing the root folder into its own buffer'
           need FileWorker.kt 'sink: JSONArray' 'walk() buffer is not named sink'
-          if [ -f "$SRC/FileWorker.kt" ] && grep -qE '^[[:space:]]*out\.(put|length)\(' "$SRC/FileWorker.kt"; then
-            echo "::error::STALE: FileWorker.kt writes to \`out\` at statement level - that name only exists inside walk(). Use \`arr\`. Re-upload it."
-            echo "FileWorker.kt - statement-level out.put/out.length (should be arr)" >> "$REPORT"
+          need FileWorker.kt 'walk(child, rel, depth + 1, sink, keepGoing)' 'recursive walk() call still passes the old buffer name'
+          # `out` was walk()'s old parameter name. It has to be gone EVERYWHERE -
+          # as a receiver, as a lambda argument, as a plain argument. Two CI runs
+          # in a row died on it (once in scanAndSync, once in the recursive
+          # call), so check the whole file rather than one statement shape.
+          if [ -f "$SRC/FileWorker.kt" ] && CODE "$SRC/FileWorker.kt" | grep -qE '\bout\b'; then
+            echo "::error::STALE: FileWorker.kt still references \`out\`. The buffers are now \`arr\` (scanAndSync) and \`sink\` (walk). Re-upload it."
+            echo "FileWorker.kt - bare identifier 'out' still present (should be arr/sink)" >> "$REPORT"
             MISSING=1
+          fi
+
+          # Pairing lives or dies on the device asking the SAME Convex
+          # deployment that the dashboard wrote the code to. If valuable-goldfish
+          # is not listed FIRST the phone claims against the wrong database and
+          # reports "Invalid pairing code" for a perfectly valid code.
+          need Backend.kt 'https://valuable-goldfish-43.convex.site' 'the deployment the dashboard creates codes on is missing from Backend.candidates'
+          need Backend.kt 'fun rotate(context: Context): Boolean' 'deployment-mismatch recovery (Backend.rotate) is missing'
+          if [ -f "$SRC/Backend.kt" ]; then
+            order=$(grep -oE 'https://[a-z0-9-]+\.convex\.site' "$SRC/Backend.kt" | head -2 | tr '\n' ' ')
+            case "$order" in
+              "https://valuable-goldfish-43.convex.site http"*|"https://valuable-goldfish-43.convex.site")
+                ;;
+              *)
+                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order). valuable-goldfish-43 must be FIRST or pairing fails with \"Invalid pairing code\"."
+                echo "Backend.kt - candidate order wrong ($order)" >> "$REPORT"
+                MISSING=1
+                ;;
+            esac
+          fi
+          need ApiClient.kt 'if (reason.contains("Invalid pairing code"))' 'claim() no longer retries on the other deployment'
+          need ApiClient.kt '.url("$url/api/device/status")' 'probe is not asserting on our own response shape'
+
+          # ---- No automatic logout -------------------------------------------
+          # MainActivity used to treat a NULL status response as "logged out".
+          # A null response is what you get for no signal, a timeout, a 5xx or
+          # a paused backend, so the phone silently threw the user back to the
+          # sign-in form and lost the pairing without anyone doing anything.
+          # The fix separates the three cases, and these markers make sure the
+          # separated version is what gets compiled.
+          need ApiClient.kt 'sealed class StatusResult' 'status can no longer distinguish "unknown token" from "could not reach the server"'
+          need ApiClient.kt 'object Rejected' 'a rejected token is not distinguishable from an outage'
+          need ApiClient.kt 'object Unreachable' 'an unreachable server is treated as a logout'
+          need ApiClient.kt 'var lastErrorWasNetwork: Boolean' 'post() no longer records whether the failure was a network failure'
+          need ApiClient.kt 'fun relocateForToken' 'deployment rotation is not distinguished from a real logout'
+          need MainActivity.kt 'private fun showUnreachable' 'an outage still sends the user back to the login screen'
+          need MainActivity.kt 'is ApiClient.StatusResult.Unreachable ->' 'refreshUi() does not branch on an unreachable server'
+          need MainActivity.kt 'private fun showRevoked' 'a server-side revoke wipes the pairing instead of pausing it'
+          # clearToken must appear EXACTLY TWICE: once in disconnect() (the
+          # user pressing Disconnect) and once in the branch where every
+          # deployment rejected the token. Any third call site is a silent
+          # logout that no one asked for.
+          if [ -f "$SRC/MainActivity.kt" ]; then
+            # `grep -c` counts LINES, so two calls on one line would slip past.
+            # Count occurrences instead.
+            n=$(grep -o "ApiClient\.clearToken(this)" "$SRC/MainActivity.kt" | wc -l | tr -d ' ')
+            if [ "$n" != "2" ]; then
+              echo "::error::STALE: MainActivity.kt calls ApiClient.clearToken(this) $n times (must be 2: Disconnect + server-rejected). A third one is an automatic logout."
+              echo "MainActivity.kt - clearToken call count $n (expected 2)" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+          if [ -f "$SRC/DeviceService.kt" ]; then
+            # The revoked branch used to call clearToken(), which is exactly the
+            # "logged me out on its own" report: revoking is a dashboard action,
+            # and it must pause the device, never erase its token.
+            if CODE "$SRC/DeviceService.kt" | sed -n '/status == "revoked"/,/^ *}/p' | grep -q "clearToken"; then
+              echo "::error::STALE: DeviceService.kt clears the token on 'revoked'. That is an automatic logout. Re-upload it."
+              echo "DeviceService.kt - revoked branch calls clearToken" >> "$REPORT"
+              MISSING=1
+            fi
+            if ! grep -q 'ServiceStatus.markError("revoked from dashboard")' "$SRC/DeviceService.kt"; then
+              echo "::error::STALE: DeviceService.kt does not pause cleanly on revocation. Re-upload it."
+              echo "DeviceService.kt - revoked branch does not mark the status" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+
+          # ---- Background services must not start themselves ---------------
+          # startService() from the background throws IllegalStateException on
+          # Android 8+. Every stop() path here runs from a dashboard request or
+          # a revocation, both of which arrive while the app is backgrounded,
+          # so they crashed the app instead of stopping capture.
+          for svc in ScreenCaptureService CameraLiveService MicLiveService CallRecorderService; do
+            if [ -f "$SRC/$svc.kt" ]; then
+              if CODE "$SRC/$svc.kt" | sed -n '/fun stop(context/,/^ *}/p' | grep -q "context.startService"; then
+                echo "::error::STALE: $svc.stop() uses startService, which throws from the background on Android 8+. Re-upload it."
+                echo "$svc.kt - stop() must use stopService()" >> "$REPORT"
+                MISSING=1
+              fi
+            fi
+          done
+
+          # ---- Frame uploads must not run on the main thread ---------------
+          # CameraLiveService delivered frames on the main looper and posted
+          # them over HTTPS from there, which throws
+          # NetworkOnMainThreadException and killed the whole live stream on
+          # the very first frame.
+          need CameraLiveService.kt 'uploadExecutor' 'live camera uploads still run on the main thread (NetworkOnMainThreadException)'
+          if [ -f "$SRC/CameraLiveService.kt" ]; then
+            if CODE "$SRC/CameraLiveService.kt" | grep -q 'setOnImageAvailableListener({ r ->'; then
+              if ! grep -q 'uploadExecutor.execute' "$SRC/CameraLiveService.kt"; then
+                echo "::error::STALE: CameraLiveService.kt uploads inside the image listener (main thread). Re-upload it."
+                echo "CameraLiveService.kt - frame upload is not off the main thread" >> "$REPORT"
+                MISSING=1
+              fi
+            fi
           fi
 
           # ---- Live-camera files: these change often, so check them by COUNT,
@@ -137,157 +239,75 @@ jobs:
               echo "CameraLiveService.kt - missing CameraDevice.TEMPLATE_PREVIEW" >> "$REPORT"
               MISSING=1
             fi
-          fi
-
-          if [ "$STALE" = "1" ] || [ "$MISSING" = "1" ]; then
-            {
-              echo "### BUILD NOT ATTEMPTED"
-              echo '```'
-              echo "Exactly these files still need to be replaced:"
-              cat "$REPORT"
-              echo ""
-              echo "Re-upload them from the extracted connectdesk-android.zip"
-              echo "(app/, gradle.properties, build.gradle.kts, settings.gradle.kts,"
-              echo " BUILD_NOTES.md, README.md) at the repository root."
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          echo "sources look current"
-
-      - name: Prepare toolchain, accept licences and build the APK
-        run: |
-          set -o pipefail
-          echo "===== DIAGNOSTIC REPORT ====="
-          {
-            echo "### Runner"
-            echo '```'
-            uname -a
-            echo '```'
-            echo "### Java"
-            echo '```'
-            java -version 2>&1 || echo "NO JAVA"
-            echo '```'
-            echo "### JAVA_HOME=$JAVA_HOME"
-            echo "### ANDROID_HOME=$ANDROID_HOME"
-            echo "### ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-            echo "### Gradle"
-            echo '```'
-            gradle --version 2>&1 || echo "GRADLE NOT ON PATH"
-            echo '```'
-          } 2>&1 | tee /tmp/diag.txt || true
-          cat /tmp/diag.txt >> "$GITHUB_STEP_SUMMARY" || true
-
-          # ---- 1. Android SDK location -------------------------------------
-          if [ -z "$ANDROID_HOME" ]; then
-            for candidate in /usr/local/lib/android/sdk "$HOME/Android/Sdk" /usr/local/android-sdk; do
-              if [ -d "$candidate" ]; then
-                echo "ANDROID_HOME=$candidate" >> "$GITHUB_ENV"
-                echo "ANDROID_SDK_ROOT=$candidate" >> "$GITHUB_ENV"
-                echo "export ANDROID_HOME=$candidate" >> "$GITHUB_ENV"
-                echo "export ANDROID_SDK_ROOT=$candidate" >> "$GITHUB_ENV"
-                break
-              fi
-            done
-          fi
-          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          export ANDROID_SDK_ROOT="$ANDROID_HOME"
-          export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/tools/bin:$ANDROID_HOME/platform-tools"
-
-          if ! command -v sdkmanager >/dev/null 2>&1; then
-            echo "::warning::sdkmanager not found on PATH, trying known locations"
-            SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -1 || true)"
-            if [ -z "$SDKMANAGER" ]; then
-              echo "::error::Android SDK cmdline tools not found - install Android Studio once, or add cmdline-tools to the runner image."
-              exit 1
+            # TEMPLATE_PREVIEW paired with a JPEG ImageReader is what made the
+            # live view black: the preview template does not drive the JPEG
+            # still-capture pipeline, and the hard-coded 480x640 was usually
+            # not even an advertised output size. YUV_420_888 + YuvImage is the
+            # combination that actually delivers frames.
+            if ! grep -q "YUV_420_888" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt is not using YUV_420_888 for the preview stream. Re-upload it."
+              echo "CameraLiveService.kt - preview stream is not YUV_420_888 (black live view)" >> "$REPORT"
+              MISSING=1
             fi
-            export PATH="$(dirname "$SDKMANAGER"):$PATH"
+            if ! grep -q "private fun toNv21" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt is missing the YUV->NV21 conversion. Re-upload it."
+              echo "CameraLiveService.kt - missing toNv21()" >> "$REPORT"
+              MISSING=1
+            fi
+            if ! grep -q "pickStreamSize" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt hard-codes the stream size instead of asking the camera. Re-upload it."
+              echo "CameraLiveService.kt - missing pickStreamSize()" >> "$REPORT"
+              MISSING=1
+            fi
           fi
-          echo "sdkmanager -> $(command -v sdkmanager)"
+          # One-shot photos: `minByOrNull { w * h }` picks the smallest advertised
+          # JPEG, which on many devices is a stub that decodes to a black square.
+          if [ -f "$SRC/CameraWorker.kt" ] && CODE "$SRC/CameraWorker.kt" | grep -q "minByOrNull { it.width \* it.height }"; then
+            echo "::error::STALE: CameraWorker.kt still picks the smallest JPEG size (black photos). Re-upload it."
+            echo "CameraWorker.kt - picks the smallest JPEG instead of pickCaptureSize()" >> "$REPORT"
+            MISSING=1
+          fi
+          need CameraWorker.kt 'private fun pickCaptureSize' 'CameraWorker.kt does not pick a real capture size (black photos)'
 
-          # ---- 2. Accept every SDK licence --------------------------------
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          yes | sdkmanager --license android-sdk-license > /dev/null 2>&1 || true
-
-          # ---- 3. Install platform + build tools --------------------------
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" || \
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
-          sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
-
-          # ---- 4. Gradle 8.7 pinned ----------------------------------------
-          # The runner ships Gradle 9.x. AGP 8.2.2 cannot run on Gradle 9 (it
-          # dies while fingerprinting task inputs), so always install 8.7 and
-          # put it first on PATH.
-          echo "::notice::Runner Gradle is $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}') - installing Gradle 8.7"
-          curl -fsSL --retry 3 -o /tmp/gradle.zip \
-            https://services.gradle.org/distributions/gradle-8.7-bin.zip
-          sudo unzip -q -o /tmp/gradle.zip -d /opt
-          echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
-          export PATH="/opt/gradle-8.7/bin:$PATH"
-          hash -r
-          echo "gradle binary in use: $(command -v gradle)" >> "$GITHUB_STEP_SUMMARY"
-          gradle --version 2>&1 | head -8 >> "$GITHUB_STEP_SUMMARY" || true
-          if ! gradle --version 2>/dev/null | grep -q '^Gradle 8\.'; then
-            echo "::error::Gradle 8.7 did not take effect - still $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}')"
-            exit 1
+          # YuvImage must be told the SAME dimensions the NV21 buffer was
+          # filled with. Using image.width/height while toNv21() filled from
+          # cropRect made YuvImage read past the buffer, throw, and the frame
+          # was dropped - a permanently black live view again.
+          if [ -f "$SRC/CameraLiveService.kt" ]; then
+            if ! grep -q "image.cropRect.width()" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt does not use cropRect dimensions for the JPEG step (black live view). Re-upload it."
+              echo "CameraLiveService.kt - toJpeg() does not use cropRect dimensions" >> "$REPORT"
+              MISSING=1
+            fi
           fi
 
-          # ---- 5. Point the build at the SDK ------------------------------
-          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
-          cat android/local.properties >> "$GITHUB_STEP_SUMMARY"
-
-          # ---- 6. Build ---------------------------------------------------
-          cd android
-          set +e
-          gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/build.log
-          STATUS=${PIPESTATUS[0]}
-          set -e
-          echo "gradle exit code: $STATUS" >> "$GITHUB_STEP_SUMMARY"
-          echo "### COMPILER ERRORS" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -nE "(^|[^a-zA-Z])(e|w): file:|error:|Compilation error|What went wrong|FAILURE:|Execution failed|AAPT:|Unresolved reference|Cannot access|is internal in|None of the following" /tmp/build.log | head -100 >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "### LOG AROUND FIRST FAILURE" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          awk '/FAILED|FAILURE:/{found=NR} {lines[NR]=$0} END{ if(found==0) found=40; start=found-120; if(start<1) start=1; for(i=start;i<=found;i++) print lines[i] }' /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "### LAST 60 LOG LINES" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          tail -60 /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-          # ---- 7. Locate and publish the APK ------------------------------
-          APK="$(find "$GITHUB_WORKSPACE/android" -name '*.apk' -type f 2>/dev/null | head -1 || true)"
-          if [ -z "$APK" ]; then
-            echo "::error::No APK produced. See the build log in the job summary."
-            exit 1
-          fi
-          APK_SIZE=$(stat -c%s "$APK")
-          echo "### APK" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "$APK - $APK_SIZE bytes" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          mkdir -p "$GITHUB_WORKSPACE/apk-out"
-          cp "$APK" "$GITHUB_WORKSPACE/apk-out/connectdesk.apk"
-          echo "APK_STAGED_AT=$GITHUB_WORKSPACE/apk-out/connectdesk.apk" >> "$GITHUB_ENV"
-
-      # `assembleDebug` now produces the ISOLATED TEST BUILD (applicationId
-      # com.connectdesk.app.debug), so it installs alongside the production
-      # app instead of replacing it.
-      - name: Upload APK (always runs, even if the build failed)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: connectdesk-debug-apk
-          path: apk-out/connectdesk.apk
-          if-no-files-found: warn
-
-      # Always ship the full Gradle log so a compile failure can be diagnosed
-      # from the artifact alone, without scrolling the step log.
-      - name: Upload build log (always runs)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: connectdesk-build-log
-          path: /tmp/build.log
-          if-no-files-found: warn
+          # ---- Live microphone (consent-based, owner-armed only) ------------
+          need MicLiveService.kt 'fun toWav' 'live microphone clips are not wrapped in a WAV header'
+          need MicLiveService.kt 'FOREGROUND_SERVICE_TYPE_MICROPHONE' 'live microphone has no visible consent indicator'
+          need MicLiveService.kt 'AudioRecord' 'live microphone does not actually record'
+          need MainActivity.kt 'switchMicLive.setOnCheckedChangeListener' 'the phone owner has no switch to arm the live microphone'
+          # Manifest registration. This used to be `grep -q 'MicLiveService'`, a bare
+          # substring match. That is satisfied by ANY name containing the
+          # string - a manifest with `.MicLiveServiceGone`, or the word inside
+          # a comment, passed the check while the real service entry was gone,
+          # and the app crashed at runtime with an unresolvable class. Verified:
+          # that exact mutation slipped past the old check. Now every declared
+          # component is matched on its exact android:name attribute, and the
+          # mic additionally has to declare its foregroundServiceType (without
+          # which Android refuses to start the service).
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          declare -A MANIFEST_ATTR=( \
+            [BootReceiver]=receiver \
+            [DeviceService]=service \
+            [CallRecorderService]=service \
+            [CameraLiveService]=service \
+            [MicLiveService]=service \
+            [ScreenCaptureService]=service \
+            [NotificationSyncService]=service \
+            [MainActivity]=activity \
+            [CameraConsentActivity]=activity \
+            [ScreenConsentActivity]=activity )
+          for comp in "${!MANIFEST_ATTR[@]}"; do
+            if [ ! -f "$MANIFEST" ]; then
+              echo "::error::MISSING FILE: $MANIFEST is not in the repository."
+              MISSING=
