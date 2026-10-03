@@ -100,7 +100,15 @@ object AppUsageWorker {
             try {
                 val interval: Int = UsageStatsManager.INTERVAL_BEST
                 val beginTime: Long = since
-                val rows: List<UsageStats> = usage.queryUsageStats(interval, beginTime)
+                val endTime: Long = System.currentTimeMillis()
+                // Use the (interval, beginTime, endTime) overload. The
+                // 2-arg overload exists in the SDK but the compiler
+                // resolves it inconsistently against the 3-arg one, which
+                // reports "No value passed for parameter 'p2'". The 3-arg
+                // form has exactly one signature, so there is no overload
+                // left to mis-resolve. It is available from API 26, and
+                // minSdk is 26.
+                val rows: List<UsageStats> = usage.queryUsageStats(interval, beginTime, endTime)
                 for (us in rows) {
                     val pkg = us.packageName
                     if (pkg.isNullOrEmpty()) continue
