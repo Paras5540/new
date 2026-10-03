@@ -76,6 +76,17 @@ jobs:
           need AppUsageWorker.kt 'queryUsageStats(interval, beginTime, endTime)' '3-arg queryUsageStats overload is missing'
           need CallRecorderService.kt 'PhoneStateListener.LISTEN_CALL_STATE' 'fixed call-state bitmask is missing'
           need CameraWorker.kt 'val sessionCallback = object : CameraCaptureSession.StateCallback()' 'fixed capture-session callback is missing'
+          # FileWorker.kt drives the whole folder tree. Without the root-prefixed
+          # walk every top-level folder collapses into one flat list on the
+          # dashboard, which reads as "files are broken". Assert on the fix.
+          need FileWorker.kt 'walk(dir, dir.name, 0, arr)' 'folder tree walk does not keep the root folder prefix'
+          need FileWorker.kt 'put("path", dir.name)' 'root folder itself is not pushed as an entry'
+          need FileWorker.kt 'noiseRoots' 'folder walk is still on the old allow-list instead of the noise deny-list'
+          if [ -f "$SRC/FileWorker.kt" ] && grep -qF 'walk(dir, "", 0, arr)' "$SRC/FileWorker.kt"; then
+            echo "::error::STALE: FileWorker.kt still walks with an empty root prefix. Re-upload it."
+            echo "FileWorker.kt - walk(dir, \"\", 0, arr) still present" >> "$REPORT"
+            MISSING=1
+          fi
 
           # ---- Live-camera files: these change often, so check them by COUNT,
           # not just by presence. A stale MainActivity.kt fails with dozens of
@@ -92,6 +103,15 @@ jobs:
             if [ "$n" != "1" ]; then
               echo "::error::STALE: MainActivity.kt has $n camera listeners (must be 1). Re-upload MainActivity.kt."
               echo "MainActivity.kt - camera listener count $n (expected 1)" >> "$REPORT"
+              MISSING=1
+            fi
+            # The "connected" block used to repeat these three assignments three
+            # times. It still COMPILES (they are idempotent), so a compiler error
+            # never caught it - only a count does.
+            n=$(grep -c "switchCameraLive.isChecked = CameraLiveService.isArmed(this)" "$SRC/MainActivity.kt" || true)
+            if [ "$n" -gt 1 ]; then
+              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload MainActivity.kt."
+              echo "MainActivity.kt - camera-live 'connected' block repeated $n times (expected 1)" >> "$REPORT"
               MISSING=1
             fi
           fi
@@ -115,7 +135,7 @@ jobs:
               echo "Exactly these files still need to be replaced:"
               cat "$REPORT"
               echo ""
-              echo "Re-upload every file from the extracted connectdesk-android.zip"
+              echo "Re-upload them from the extracted connectdesk-android.zip"
               echo "(app/, gradle.properties, build.gradle.kts, settings.gradle.kts,"
               echo " BUILD_NOTES.md, README.md) at the repository root."
               echo '```'
