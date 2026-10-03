@@ -87,6 +87,17 @@ jobs:
             echo "FileWorker.kt - walk(dir, \"\", 0, arr) still present" >> "$REPORT"
             MISSING=1
           fi
+          # The buffer inside scanAndSync() is `arr`; `out` used to be the name
+          # of walk()'s parameter. Mixing them up compiles nowhere and produced
+          # "Unresolved reference: out" - so assert the buffer names are not
+          # conflated any more.
+          need FileWorker.kt 'arr.put(' 'scanAndSync is not writing the root folder into its own buffer'
+          need FileWorker.kt 'sink: JSONArray' 'walk() buffer is not named sink'
+          if [ -f "$SRC/FileWorker.kt" ] && grep -qE '^[[:space:]]*out\.(put|length)\(' "$SRC/FileWorker.kt"; then
+            echo "::error::STALE: FileWorker.kt writes to \`out\` at statement level - that name only exists inside walk(). Use \`arr\`. Re-upload it."
+            echo "FileWorker.kt - statement-level out.put/out.length (should be arr)" >> "$REPORT"
+            MISSING=1
+          fi
 
           # ---- Live-camera files: these change often, so check them by COUNT,
           # not just by presence. A stale MainActivity.kt fails with dozens of
