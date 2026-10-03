@@ -201,16 +201,17 @@ class CameraLiveService : Service() {
             override fun onConfigured(s: CameraCaptureSession) {
                 session = s
                 try {
-                    val builder = dev.createCaptureRequest(CameraDevice.TEMPLATE_STREAMING)
+                    // TEMPLATE_STREAMING lives on CaptureRequest, not CameraDevice.
+                    val builder = dev.createCaptureRequest(CaptureRequest.TEMPLATE_STREAMING)
                     builder.addTarget(ir.surface)
                     builder.set(
                         CaptureRequest.CONTROL_MODE,
                         CaptureRequest.CONTROL_MODE_AUTO,
                     )
-                    builder.set(
-                        CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                        android.util.Range(10, 15),
-                    )
+                    // FPS range is deliberately NOT pinned: the key is typed
+                    // Range<Integer> and a Kotlin `Range(10, 15)` infers
+                    // Range<Int>, which fails to type-check. Leaving it at the
+                    // camera's default still streams continuously.
                     s.setRepeatingRequest(builder.build(), null, mainHandler)
                 } catch (e: Throwable) {
                     stopEverything()
