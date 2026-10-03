@@ -437,12 +437,9 @@ class MainActivity : AppCompatActivity() {
         switchCalls.visibility = View.VISIBLE
         tvCallExplain.visibility = View.VISIBLE
         switchCalls.isChecked = Prefs.callRecordingArmed(this)
-        switchCameraLive.visibility = View.VISIBLE
-        tvCameraLiveExplain.visibility = View.VISIBLE
-        switchCameraLive.isChecked = CameraLiveService.isArmed(this)
-        switchCameraLive.visibility = View.VISIBLE
-        tvCameraLiveExplain.visibility = View.VISIBLE
-        switchCameraLive.isChecked = CameraLiveService.isArmed(this)
+        // This block was repeated three times by an earlier bad multi-edit.
+        // The repeats compiled (the statements are idempotent) but they are
+        // dead code, so they are gone now.
         switchCameraLive.visibility = View.VISIBLE
         tvCameraLiveExplain.visibility = View.VISIBLE
         switchCameraLive.isChecked = CameraLiveService.isArmed(this)

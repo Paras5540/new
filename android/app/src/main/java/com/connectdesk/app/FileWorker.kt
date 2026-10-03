@@ -25,16 +25,28 @@ object FileWorker {
     private const val MAX_ENTRIES = 2000
     private const val MAX_DEPTH = 8
 
-    /** Folders worth indexing — app-private data stays on the phone. */
-    private val interestingRoots = listOf(
-        "Download",
-        "Documents",
-        "DCIM",
-        "Pictures",
-        "Movies",
-        "Music",
-        "Podcasts",
-        "Books",
+    /**
+ * Folders that are pure Android noise and never hold user files.
+ *
+ * This used to be an ALLOW-list (Download, Documents, DCIM, ...), which meant
+ * the dashboard showed a handful of folders while the phone's file manager
+ * showed every top-level folder the user actually has. That mismatch is
+ * exactly what "dashboard mera file manager jaisa nahi dikh raha" means, so we
+ * now index EVERY top-level directory except this small denylist, and the
+ * privacy boundary is unchanged: app-private data lives outside shared
+ * storage and is never walked.
+ */
+    private val noiseRoots = setOf(
+        "Android",
+        "Alarms",
+        "Bluetooth",
+        "Mip",
+        "Mtp",
+        "Notifications",
+        "Ringtones",
+        "SystemAndroidVolume",
+        "media",
+        ".thumbnails",
     )
 
     fun scanAndSync(token: String): Pair<Boolean, String> {
@@ -46,11 +58,27 @@ object FileWorker {
         var count = 0
         try {
             val top: List<File> = root.listFiles()?.filter { it.isDirectory } ?: emptyList<File>()
-            val preferred = top.filter { it.name in interestingRoots }
-            val roots: List<File> = if (preferred.isNotEmpty()) preferred else top
+            val roots: List<File> = top
+                .filter { it.name !in noiseRoots && !it.name.startsWith(".") }
+                .sortedBy { it.name.lowercase() }
             for (dir in roots) {
                 if (count >= MAX_ENTRIES) break
-                walk(dir, "", 0, arr) { count++; count < MAX_ENTRIES }
+                // The root folder itself is an entry, and its children hang
+                // underneath it. Previously the walk started at "" so every
+                // root folder collapsed into one flat list with no names --
+                // Download/IMG.jpg and Documents/notes.txt both arrived as
+                // "IMG.jpg" / "notes.txt", and the dashboard had no tree at all.
+                out.put(
+                    JSONObject()
+                        .put("path", dir.name)
+                        .put("name", dir.name)
+                        .put("kind", "folder")
+                        .put("sizeBytes", 0L)
+                        .put("mimeType", "inode/directory")
+                        .put("modifiedAt", dir.lastModified()),
+                )
+                count++
+                walk(dir, dir.name, 0, arr) { count++; count < MAX_ENTRIES }
             }
         } catch (e: Throwable) {
             return Pair(false, "Scan failed: ${e.message}")
