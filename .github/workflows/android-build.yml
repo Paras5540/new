@@ -96,14 +96,14 @@ jobs:
             fi
           fi
           if [ -f "$SRC/CameraLiveService.kt" ]; then
-            if grep -q "CameraDevice.TEMPLATE_STREAMING" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt still uses CameraDevice.TEMPLATE_STREAMING (wrong constant). Re-upload it."
-              echo "CameraLiveService.kt - wrong constant CameraDevice.TEMPLATE_STREAMING" >> "$REPORT"
+            if grep -q "TEMPLATE_STREAMING" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt uses TEMPLATE_STREAMING, which does not exist in the Camera2 API. Re-upload it."
+              echo "CameraLiveService.kt - TEMPLATE_STREAMING is not a real Camera2 constant" >> "$REPORT"
               MISSING=1
             fi
-            if ! grep -q "CaptureRequest.TEMPLATE_STREAMING" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt missing CaptureRequest.TEMPLATE_STREAMING. Re-upload it."
-              echo "CameraLiveService.kt - missing CaptureRequest.TEMPLATE_STREAMING" >> "$REPORT"
+            if ! grep -q "CameraDevice.TEMPLATE_PREVIEW" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt missing CameraDevice.TEMPLATE_PREVIEW. Re-upload it."
+              echo "CameraLiveService.kt - missing CameraDevice.TEMPLATE_PREVIEW" >> "$REPORT"
               MISSING=1
             fi
           fi
