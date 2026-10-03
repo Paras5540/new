@@ -201,8 +201,11 @@ class CameraLiveService : Service() {
             override fun onConfigured(s: CameraCaptureSession) {
                 session = s
                 try {
-                    // TEMPLATE_STREAMING lives on CaptureRequest, not CameraDevice.
-                    val builder = dev.createCaptureRequest(CaptureRequest.TEMPLATE_STREAMING)
+                    // The Camera2 API has no "streaming" template. The valid ones are
+                    // TEMPLATE_PREVIEW / TEMPLATE_STILL_CAPTURE /
+                    // TEMPLATE_VIDEO_RECORD, and TEMPLATE_PREVIEW is the one
+                    // intended for a continuous repeating-capture stream.
+                    val builder = dev.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
                     builder.addTarget(ir.surface)
                     builder.set(
                         CaptureRequest.CONTROL_MODE,
