@@ -118,7 +118,7 @@ object FileWorker {
                 continue
             }
             if (child.isDirectory) {
-                walk(child, rel, depth + 1, out, keepGoing)
+                walk(child, rel, depth + 1, sink, keepGoing)
             }
         }
     }
