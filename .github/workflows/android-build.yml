@@ -641,6 +641,26 @@ jobs:
           # the OS refuses a camera open with no visible activity, so the
           # direct call must still be the primary path.
           need CommandWorker.kt 'postPhotoNotice(context, facing)' 'the per-capture "photo is being taken" notification is gone'
+          # ---- Kotlin syntax the compiler rejected on the first real build ---
+          # VOLUME_EXTERNAL is a constant on MediaStore. It is NOT on
+          # Environment, so `Environment.VOLUME_EXTERNAL` does not resolve.
+          need CommandWorker.kt 'android.provider.MediaStore.VOLUME_EXTERNAL' 'the per-volume media URIs are not built from MediaStore.VOLUME_EXTERNAL (compile error)'
+          if [ -f "$SRC/CommandWorker.kt" ] && CODE "$SRC/CommandWorker.kt" | grep -q 'Environment\.VOLUME_EXTERNAL'; then
+            echo "::error::STALE: CommandWorker.kt reads VOLUME_EXTERNAL off Environment. It is a MediaStore constant. Re-upload it."
+            echo "CommandWorker.kt - Environment.VOLUME_EXTERNAL" >> "$REPORT"
+            MISSING=1
+          fi
+          # Kotlin has NO destructuring declarations. `for ((a, (b, c)) in ...)`
+          # and `for ((clause, args) in attempts)` are not valid syntax -- and
+          # because the loop header failed to parse, every name declared in it
+          # then reported as "Unresolved reference", turning one mistake into a
+          # dozen misleading errors. Assert the index-based form.
+          need CommandWorker.kt 'for (entry in collections)' 'the media lookup is back to a nested for-destructuring (no such syntax in Kotlin)'
+          need CommandWorker.kt 'for (attempt in attempts)' 'the media lookup attempts are back to a for-destructuring of Pair (no such syntax in Kotlin)'
+          # `const` is legal only at top level, in a named object or in a
+          # companion object. These two caps live in a plain class body.
+          need NotificationSyncService.kt 'private val PENDING_MAX = 100' 'the notification queue cap is `const` in a class body (compile error)'
+          need NotificationSyncService.kt 'private val PENDING_CHATS_MAX = 200' 'the chat queue cap is `const` in a class body (compile error)'
           if [ -f "$SRC/CommandWorker.kt" ]; then
             if ! CODE "$SRC/CommandWorker.kt" \
               | sed -n '/private fun capturePhoto/,/^    private fun postTapToAllow/p' \
