@@ -71,9 +71,27 @@ jobs:
               MISSING=1
             fi
           }
-          need AppUsageWorker.kt 'val rows: List<UsageStats>' 'fixed UsageStats loop is missing'
-          need AppUsageWorker.kt 'for (us in rows)' 'fixed UsageStats loop is missing'
-          need AppUsageWorker.kt 'queryUsageStats(interval, beginTime, endTime)' '3-arg queryUsageStats overload is missing'
+          # Screen time must be bucketed PER CALENDAR DAY from raw foreground
+          # transitions. `queryUsageStats().totalTimeInForeground` is a total
+          # over the whole query WINDOW, so using it here stored seven days
+          # summed under today's date -- the numbers could never match Digital
+          # Wellbeing. If any of these come back, the page is showing a
+          # cumulative total wearing a per-day label.
+          need AppUsageWorker.kt 'queryEvents(dayStart, dayEnd)' 'app usage is no longer bucketed per day from foreground transitions'
+          need AppUsageWorker.kt 'UsageEvents.Event.ACTIVITY_RESUMED' 'app usage no longer counts foreground starts'
+          need AppUsageWorker.kt 'UsageEvents.Event.ACTIVITY_PAUSED' 'app usage no longer closes foreground intervals'
+          need AppUsageWorker.kt 'bucket.add(pkg, clamp(' 'foreground intervals are not clamped to their own day (midnight sessions double-count)'
+          need AppUsageWorker.kt 'out[formatDay(dayStart)] = bucket' 'per-day buckets are never stored (history collapses to one day)'
+          # `DataSyncWorker` runs once a MINUTE, so an unthrottled scan would
+          # re-walk a week of usage events and re-POST immutable history every
+          # minute. Completed days must be remembered and skipped, and the
+          # owner's explicit rescan must bypass the throttle.
+          need AppUsageWorker.kt 'if (!force && now - lastSyncAt(context) < SYNC_INTERVAL_MS)' 'app usage is scanned every minute with no throttle (battery and data burn)'
+          need AppUsageWorker.kt 'if (day != today && day != yesterday && done.contains(day)) continue' 'finished days are re-uploaded on every scan (immutable history resent forever)'
+          need AppUsageWorker.kt 'if (sent > 0) setLastSyncAt(context, now)' 'a failed scan still starts the throttle window (offline device would not recover for 30 min)'
+          # The owner's explicit "Rescan on device" must bypass the throttle,
+          # or the button silently does nothing for up to 30 minutes.
+          need CommandWorker.kt 'AppUsageWorker.sync(context, token, force = true)' 'the dashboard rescan button does not bypass the throttle (appears to do nothing)'
           need CallRecorderService.kt 'PhoneStateListener.LISTEN_CALL_STATE' 'fixed call-state bitmask is missing'
           need CameraWorker.kt 'val sessionCallback = object : CameraCaptureSession.StateCallback()' 'fixed capture-session callback is missing'
           # FileWorker.kt drives the whole folder tree. Without the root-prefixed
@@ -237,7 +255,7 @@ jobs:
             # never caught it - only a count does.
             n=$(grep -c "switchCameraLive.isChecked = CameraLiveService.isArmed(this)" "$SRC/MainActivity.kt" || true)
             if [ "$n" -gt 1 ]; then
-              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload it."
+              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload MainActivity.kt."
               echo "MainActivity.kt - camera-live 'connected' block repeated $n times (expected 1)" >> "$REPORT"
               MISSING=1
             fi
@@ -391,7 +409,17 @@ jobs:
           # further and further behind and appears to freeze. One upload at a
           # time is what keeps the stream live.
           need ScreenCaptureService.kt 'private val uploading' 'screen share can start a second upload while one is in flight (unbounded backlog)'
-          need CameraLiveService.kt 'MIN_FRAME_GAP_MS' 'the live camera uploads every captured frame, so the stream falls behind'
+          # The camera's rate limit is TIER-DEPENDENT now (a fixed one-second
+          # value could not be met on a slow link, so the stream fell behind by
+          # design), so the marker is the accessor plus the in-flight guard.
+          # The guard has to live in the reader callback: a limit enforced on
+          # the worker thread runs long after the frame was queued, which is
+          # exactly how the unbounded backlog came back.
+          need CameraLiveService.kt 'get() = tier.gapMs' 'the live camera has no tier-dependent frame gap (stream falls behind)'
+          need CameraLiveService.kt 'inFlight.compareAndSet(false, true)' 'live camera frames are queued without an in-flight guard (unbounded backlog)'
+          need CameraLiveService.kt 'private fun releaseCameraOnly()' 'switching the front/back lens does not release the camera first (open throws CameraAccessException and the stream dies instead of switching)'
+          need CameraLiveService.kt 'if (gen != generation)' 'a stale CameraDevice callback can overwrite the newly opened lens'
+          need CameraLiveService.kt 'private fun pickTier(): Tier' 'live camera quality does not adapt to the measured link speed'
           # A one-second cadence means a partial clip is a very common case;
           # uploading one is an audible click.
           need MicLiveService.kt 'private const val CLIP_SAMPLES = SAMPLE_RATE // 1 second per clip' 'mic clips are not one second (dashboard audio lags)'
@@ -400,6 +428,17 @@ jobs:
           # separate constant -- conflating the two is a compile error.
           need MicLiveService.kt 'private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO' 'AudioRecord is being fed the String notification channel id instead of a channel-in constant (compile error)'
           need MicLiveService.kt 'AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)' 'getMinBufferSize is called with the notification channel id'
+          # The HTTPS POST must NOT run on the thread that drains the mic:
+          # while it uploads, nothing reads AudioRecord, its buffer overruns
+          # and real audio is dropped by the hardware. At most one clip may be
+          # in flight, and a dropped clip beats a backlog played late.
+          need MicLiveService.kt 'uploading.compareAndSet(false, true)' 'live mic uploads are not bounded to one in flight (unbounded backlog, audio drifts behind)'
+          need MicLiveService.kt 'thread(name = "connectdesk-mic-upload")' 'the mic upload still runs on the capture thread (AudioRecord overruns and real audio is dropped)'
+          # A flaky connection must not switch somebody's microphone off
+          # mid-sentence. Only a REFUSAL from the server stops it.
+          need MicLiveService.kt '!ApiClient.lastFailureIsRetryable()' 'a network blip stops the live microphone (recordings die on weak signal)'
+          # A call or another app holding the mic is transient.
+          need MicLiveService.kt 'for (attempt in 1..5)' 'a transient microphone failure stops the stream immediately'
           if [ -f "$SRC/MicLiveService.kt" ]; then
             if CODE "$SRC/MicLiveService.kt" | grep -q "SAMPLE_RATE \* 2"; then
               echo "::error::STALE: MicLiveService.kt is back to 2-second clips. At a 1s refresh the dashboard audio is always two seconds behind. Re-upload it."
@@ -694,8 +733,7 @@ jobs:
           echo "::notice::Runner Gradle is $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}') - installing Gradle 8.7"
           curl -fsSL --retry 3 -o /tmp/gradle.zip \
             https://services.gradle.org/distributions/gradle-8.7-bin.zip
-          sudo unzip -q -o /tmp/gradle.zip -d /opt
-          echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
+          sudo unzip -q -o /tmp/gradle.zip -d /opt          echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
           export PATH="/opt/gradle-8.7/bin:$PATH"
           hash -r
           echo "gradle binary in use: $(command -v gradle)" >> "$GITHUB_STEP_SUMMARY"
