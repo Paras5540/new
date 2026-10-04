@@ -683,7 +683,7 @@ jobs:
             echo "### JAVA_HOME=$JAVA_HOME"
             echo "### ANDROID_HOME=$ANDROID_HOME"
             echo "### ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-            echo "### Gradle"
+            echo "### Gradle (default on PATH)"
             echo '```'
             gradle --version 2>&1 || echo "GRADLE NOT ON PATH"
             echo '```'
@@ -726,20 +726,78 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
           sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
 
-          # ---- 4. Gradle 8.7 pinned ----------------------------------------
-          # The runner ships Gradle 9.x. AGP 8.2.2 cannot run on Gradle 9 (it
-          # dies while fingerprinting task inputs), so always install 8.7 and
-          # put it first on PATH.
-          echo "::notice::Runner Gradle is $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}') - installing Gradle 8.7"
-          curl -fsSL --retry 3 -o /tmp/gradle.zip \
-            https://services.gradle.org/distributions/gradle-8.7-bin.zip
-          sudo unzip -q -o /tmp/gradle.zip -d /opt          echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
-          export PATH="/opt/gradle-8.7/bin:$PATH"
-          hash -r
-          echo "gradle binary in use: $(command -v gradle)" >> "$GITHUB_STEP_SUMMARY"
-          gradle --version 2>&1 | head -8 >> "$GITHUB_STEP_SUMMARY" || true
-          if ! gradle --version 2>/dev/null | grep -q '^Gradle 8\.'; then
-            echo "::error::Gradle 8.7 did not take effect - still $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}')"
+          # ---- 4. Gradle 8.x -----------------------------------------------
+          # AGP 8.2.2 cannot run on Gradle 9: it dies while fingerprinting task
+          # inputs. The runner ships Gradle 9.8.0, so a Gradle 8.x has to be
+          # resolved somehow.
+          #
+          # The repo carries NO gradle wrapper (no gradlew, no gradle/wrapper),
+          # so nothing in the checkout pins a version -- the workflow has to.
+          #
+          # This step USED TO download Gradle 8.7 from services.gradle.org and
+          # that download is exactly where the job died, with no diagnostics
+          # captured, so the run only said "exit code 11" and left nothing to
+          # go on. Two changes fix that:
+          #   1. Prefer a Gradle 8.x ALREADY on the runner image
+          #      (/opt/hostedtoolcache/gradle). No network, no unzip, no
+          #      permission problems -- and it is the same reason the 9.8.0
+          #      above was found in the first place.
+          #   2. Download only as a fallback, into $HOME (no sudo), and put
+          #      curl's own stderr into the job summary so a future failure
+          #      says WHY instead of a bare exit code.
+          echo "### GRADLE CANDIDATES" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '```'
+            echo "\$ ls /opt/hostedtoolcache/gradle/"
+            ls -1 /opt/hostedtoolcache/gradle/ 2>&1 || echo "(no hostedtoolcache/gradle)"
+            echo "\$ ls \$HOME/.gradle/wrapper/dists"
+            ls -1 "$HOME/.gradle/wrapper/dists" 2>&1 || echo "(no wrapper dists)"
+            echo "\$ command -v gradle"
+            command -v gradle || echo "(gradle not on PATH)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          GRADLE_BIN=""
+          GRADLE_VER=""
+          for dir in $(ls -1d /opt/hostedtoolcache/gradle/*/ 2>/dev/null | sort -V -r); do
+            for d in "${dir}x64/bin/gradle" "${dir}bin/gradle"; do
+              [ -x "$d" ] || continue
+              v=$("$d" --version 2>/dev/null | awk '/^Gradle /{print $2}' || true)
+              case "$v" in
+                8.*)
+                  GRADLE_BIN="$d"
+                  GRADLE_VER="$v"
+                  break
+                  ;;
+              esac
+            done
+            if [ -n "$GRADLE_BIN" ]; then break; fi
+          done
+
+          if [ -n "$GRADLE_BIN" ]; then
+            echo "::notice::Using Gradle $GRADLE_VER already installed on the runner at $GRADLE_BIN"
+          else
+            echo "::notice::No Gradle 8.x on the runner; downloading Gradle 8.7"
+            GRADLE_URL="https://services.gradle.org/distributions/gradle-8.7-bin.zip"
+            if ! curl -fSL --retry 3 --retry-delay 5 --connect-timeout 30 \
+                 -o "$HOME/gradle-8.7-bin.zip" "$GRADLE_URL" \
+                 >> "$GITHUB_STEP_SUMMARY" 2>&1; then
+              echo "::error::Could not download Gradle 8.7 from $GRADLE_URL. AGP 8.2.2 cannot run on the runner's Gradle 9.8.0, so there is no build. curl's own output is in this job summary."
+              exit 1
+            fi
+            unzip -q -o "$HOME/gradle-8.7-bin.zip" -d "$HOME" >> "$GITHUB_STEP_SUMMARY" 2>&1 || {
+              echo "::error::Downloaded $GRADLE_URL but could not unzip it. See this job summary."
+              exit 1
+            }
+            GRADLE_BIN="$HOME/gradle-8.7/bin/gradle"
+            GRADLE_VER="8.7"
+            chmod +x "$GRADLE_BIN" || true
+          fi
+
+          echo "gradle binary in use: $GRADLE_BIN ($GRADLE_VER)" >> "$GITHUB_STEP_SUMMARY"
+          "$GRADLE_BIN" --version 2>&1 | head -10 >> "$GITHUB_STEP_SUMMARY" || true
+          if ! "$GRADLE_BIN" --version 2>/dev/null | grep -q '^Gradle 8\.'; then
+            echo "::error::Resolved Gradle is not 8.x (binary: $GRADLE_BIN). AGP 8.2.2 will not run on it."
             exit 1
           fi
 
@@ -750,10 +808,16 @@ jobs:
           # ---- 6. Build ---------------------------------------------------
           cd android
           set +e
-          gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/build.log
+          "$GRADLE_BIN" assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/build.log
           STATUS=${PIPESTATUS[0]}
           set -e
           echo "gradle exit code: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$STATUS" -ne 0 ]; then
+            # Fail the step so the run is honestly marked red. The artifact
+            # steps below are `if: always()`, so the build log and any partial
+            # APK are still uploaded for diagnosis.
+            echo "::error::assembleDebug failed (exit $STATUS). Compiler errors, if any, are in this job summary under COMPILER ERRORS, and the full log is in the connectdesk-build-log artifact."
+          fi
           echo "### COMPILER ERRORS" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           grep -nE "(^|[^a-zA-Z])(e|w): file:|error:|Compilation error|What went wrong|FAILURE:|Execution failed|AAPT:|Unresolved reference|Cannot access|is internal in|None of the following" /tmp/build.log | head -100 >> "$GITHUB_STEP_SUMMARY" || true
@@ -781,6 +845,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/apk-out"
           cp "$APK" "$GITHUB_WORKSPACE/apk-out/connectdesk.apk"
           echo "APK_STAGED_AT=$GITHUB_WORKSPACE/apk-out/connectdesk.apk" >> "$GITHUB_ENV"
+          # Only now is the job genuinely successful.
+          exit "$STATUS"
 
       # `assembleDebug` now produces the ISOLATED TEST BUILD (applicationId
       # com.connectdesk.app.debug), so it installs alongside the production
