@@ -13,11 +13,10 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.graphics.Bitmap
 import android.graphics.ImageFormat
-import android.graphics.Rect
 import android.media.Image
 import android.media.ImageReader
-import android.media.YuvImage
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -184,15 +183,15 @@ class CameraLiveService : Service() {
         //   1. 480x640 is usually not in the camera's supported JPEG output list
         //      at all, so the session configures but no image ever arrives;
         //   2. TEMPLATE_PREVIEW does not drive the JPEG still-capture pipeline.
-        // TEMPLATE_PREVIEW must be paired with YUV_420_888, and the YUV frame
-        // is compressed to JPEG here with YuvImage.
+   // TEMPLATE_PREVIEW must be paired with YUV_420_888, and the YUV frame
+   // is converted to ARGB and compressed to JPEG here with Bitmap.
         val configMap = try {
             mgr.getCameraCharacteristics(id)
                 .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         } catch (_: Throwable) {
             null
         }
-        val yuvSizes = configMap?.getOutputSizes(android.graphics.ImageFormat.YUV_420_888)
+        val yuvSizes = configMap?.getOutputSizes(ImageFormat.YUV_420_888)
         val size = pickStreamSize(yuvSizes)
         if (size == null) {
             stopEverything()
@@ -204,7 +203,7 @@ class CameraLiveService : Service() {
         val ir = ImageReader.newInstance(
             size.width,
             size.height,
-            android.graphics.ImageFormat.YUV_420_888,
+            ImageFormat.YUV_420_888,
             2,
         )
         reader = ir
@@ -263,84 +262,88 @@ class CameraLiveService : Service() {
     }
 
     /**
-     * Converts a YUV_420_888 frame into NV21, which is the only planar format
-     * [android.media.YuvImage] can compress.
+     * Converts a YUV_420_888 frame into ARGB pixels.
+     *
+     * WHY NOT `YuvImage`: the previous version packed the frame into NV21 and
+     * handed it to `android.media.YuvImage`. That class does not resolve on this
+     * project's Android classpath at all -- even `import android.media.YuvImage`
+     * failed to compile -- so the whole live-camera path could not build. This
+     * does the YUV->RGB conversion directly and hands the pixels to `Bitmap`,
+     * which is already used (and already compiles) elsewhere in this app.
      *
      * Row and pixel strides are honoured: they are not 1 on real hardware, and
-     * ignoring them is what produces skewed or black output.
+     * ignoring them is what produces skewed or black output. Chroma is
+     * subsampled 2x2, so the U/V cursor only advances on even columns.
      */
-    private fun toNv21(image: Image): ByteArray {
+    private fun yuvToArgb(image: Image): IntArray? {
         val crop = image.cropRect
         val w = crop.width()
         val h = crop.height()
+        if (w <= 0 || h <= 0) return null
+
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
         val yBuf = yPlane.buffer
         val uBuf = uPlane.buffer
         val vBuf = vPlane.buffer
+        val out = IntArray(w * h)
 
-        val out = ByteArray(w * h * 3 / 2)
-        var pos = 0
-
-        // Luma plane.
         var yPos = crop.top * yPlane.rowStride + crop.left * yPlane.pixelStride
-        for (row in 0 until h) {
-            var col = yPos
-            for (x in 0 until w) {
-                if (pos >= out.size) break
-                out[pos++] = yBuf.get(col)
-                col += yPlane.pixelStride
-            }
-            yPos += yPlane.rowStride
-        }
-
-        // Chroma planes, interleaved as V then U (NV21 order).
         var uPos = (crop.top / 2) * uPlane.rowStride + (crop.left / 2) * uPlane.pixelStride
         var vPos = (crop.top / 2) * vPlane.rowStride + (crop.left / 2) * vPlane.pixelStride
-        for (row in 0 until h / 2) {
+
+        for (row in 0 until h) {
+            var yc = yPos
             var uc = uPos
             var vc = vPos
-            for (x in 0 until w / 2) {
-                if (pos >= out.size) break
-                out[pos++] = vBuf.get(vc)
-                out[pos++] = uBuf.get(uc)
-                uc += uPlane.pixelStride
-                vc += vPlane.pixelStride
+            for (x in 0 until w) {
+                // An empty plane buffer must not throw; a black frame beats a crash.
+                if (yc >= 0 && yc < yBuf.limit()) {
+                    val yv = (yBuf.get(yc) and 0xFF) - 16
+                    val u = if (uc in 0 until uBuf.limit()) (uBuf.get(uc) and 0xFF) - 128 else 0
+                    val v = if (vc in 0 until vBuf.limit()) (vBuf.get(vc) and 0xFF) - 128 else 0
+                    val yy = 298 * yv
+                    var r = (yy + 409 * v + 128) shr 8
+                    var g = (yy - 100 * u - 208 * v + 128) shr 8
+                    var b = (yy + 516 * u + 128) shr 8
+                    if (r < 0) r = 0 else if (r > 255) r = 255
+                    if (g < 0) g = 0 else if (g > 255) g = 255
+                    if (b < 0) b = 0 else if (b > 255) b = 255
+                    out[row * w + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                } else {
+                    out[row * w + x] = 0xFF shl 24
+                }
+                yc += yPlane.pixelStride
+                if (x % 2 == 1) {
+                    uc += uPlane.pixelStride
+                    vc += vPlane.pixelStride
+                }
             }
+            yPos += yPlane.rowStride
             uPos += uPlane.rowStride
             vPos += vPlane.rowStride
         }
-
-        if (pos >= out.size) return out
-        // Extremely defensive: a truncated buffer would make YuvImage throw.
-        return out.copyOf(out.size)
+        return out
     }
 
     /** YUV frame -> JPEG bytes. Returns null when compression is not possible. */
     private fun toJpeg(image: Image): ByteArray? {
-        // The NV21 buffer is filled from cropRect, so YuvImage must be told
-        // the SAME dimensions. Using image.width/height here while cropRect is
-        // smaller made YuvImage read past the buffer and throw, which surfaced
-        // as a permanently black live view.
+        // The pixel buffer is produced from cropRect, so the Bitmap MUST be the
+        // same size. Using image.width/height while cropRect is smaller made the
+        // buffer and the bitmap disagree, which surfaced as a permanently black
+        // live view.
         val w = image.cropRect.width()
         val h = image.cropRect.height()
         if (w <= 0 || h <= 0) return null
+        val pixels = yuvToArgb(image) ?: return null
         return try {
-            val nv21 = toNv21(image)
-            val yuv = YuvImage(
-                nv21,
-                ImageFormat.NV_21,
-                w,
-                h,
-                null,
-            )
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            bmp.setPixels(pixels, 0, w, 0, 0, w, h)
             val out = ByteArrayOutputStream()
-            if (!yuv.compressToJpeg(Rect(0, 0, w, h), JPEG_QUALITY, out)) {
-                null
-            } else {
-                out.toByteArray()
-            }
+            val ok = bmp.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
+            bmp.recycle()
+            if (!ok) null else out.toByteArray()
         } catch (_: Throwable) {
             null
         }
