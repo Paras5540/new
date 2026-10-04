@@ -131,20 +131,21 @@ jobs:
           # The dashboard writes the pairing code on the deployment its build
           # resolves to. Omitting it from the phone is exactly what produced
           # `HTTP 400 Invalid pairing code` for a code created on screen.
-          need Backend.kt 'https://notable-snail-502.convex.site' 'the deployment the DASHBOARD creates pairing codes on is missing from Backend.candidates, so every pairing fails with HTTP 400'
+          need Backend.kt 'https://cautious-squirrel-266.convex.site' 'the ACTIVE deployment (dev/rahula5540) is missing from Backend.candidates, so the phone asks the old account and every request fails'
+          need Backend.kt 'https://notable-snail-502.convex.site' 'the previously-active deployment is missing from Backend.candidates (kept as a fallback)'
           need Backend.kt 'fun rotate(context: Context): Boolean' 'deployment-mismatch recovery (Backend.rotate) is missing'
           if [ -f "$SRC/Backend.kt" ]; then
             # ORDER MATTERS: the pairing code is written to ONE deployment, so
-            # the phone must ask that same deployment for it. The dashboard
-            # resolves to notable-snail-502 (its configured URL is probed before
-            # any fallback and it is healthy), so that one must be FIRST here or
-            # pairing returns HTTP 400 "Invalid pairing code".
+            # the phone must ask that same deployment for it. The project moved
+            # to cautious-squirrel-266 (dev/rahula5540) after the previous team
+            # hit its free-plan ceiling, so that one must be FIRST here or every
+            # request goes to a disabled account.
             order=$(grep -oE 'https://[a-z0-9-]+\.convex\.site' "$SRC/Backend.kt" | head -2 | tr '\n' ' ')
             case "$order" in
-              "https://notable-snail-502.convex.site http"*|"https://notable-snail-502.convex.site")
+              "https://cautious-squirrel-266.convex.site http"*|"https://cautious-squirrel-266.convex.site")
                 ;;
               *)
-                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order). notable-snail-502 must be FIRST -- it is the deployment the dashboard creates pairing codes on; otherwise pairing fails with HTTP 400 \"Invalid pairing code\"."
+                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order). cautious-squirrel-266 must be FIRST -- it is the deployment the dashboard creates pairing codes on and pushes to; otherwise the phone asks a stale account and every request fails."
                 echo "Backend.kt - candidate order wrong ($order)" >> "$REPORT"
                 MISSING=1
                 ;;
@@ -255,7 +256,7 @@ jobs:
             # never caught it - only a count does.
             n=$(grep -c "switchCameraLive.isChecked = CameraLiveService.isArmed(this)" "$SRC/MainActivity.kt" || true)
             if [ "$n" -gt 1 ]; then
-              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload MainActivity.kt."
+              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload it."
               echo "MainActivity.kt - camera-live 'connected' block repeated $n times (expected 1)" >> "$REPORT"
               MISSING=1
             fi
@@ -372,7 +373,7 @@ jobs:
             MISSING=1
           fi
           if [ -f "$MANIFEST" ] && ! grep -A3 'android:name="\.CameraLiveService"' "$MANIFEST" | grep -q 'foregroundServiceType="camera"'; then
-            echo "::error::STALE: the CameraLiveService entry does not declare foregroundServiceType=\"camera\". Re-upload the manifest."
+            echo "::error::STALE: the CameraLiveService entry does not declare foregroundServiceType=\"camera\". Android refuses to start the service without it. Re-upload the manifest."
             echo "AndroidManifest.xml - CameraLiveService foregroundServiceType missing" >> "$REPORT"
             MISSING=1
           fi
