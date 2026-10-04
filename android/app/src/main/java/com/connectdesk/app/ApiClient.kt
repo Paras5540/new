@@ -173,16 +173,17 @@ object ApiClient {
         // A reachable backend that says "Invalid pairing code" for a code the
         // dashboard just generated is the classic signature of a DEPLOYMENT
         // MISMATCH: the code was written on one Convex deployment and we read
-        // it from another. Rotate to the next candidate and try once more
-        // before telling the user their code is wrong.
-        if (resp == null) {
+        // it from another. Walk EVERY remaining candidate before telling the
+        // user their code is wrong -- a single retry was not enough when the
+        // stored URL pointed at a deployment the dashboard had since moved off.
+        var attempts = 0
+        while (resp == null && attempts < Backend.candidates.size) {
             val reason = lastError ?: ""
-            if (reason.contains("Invalid pairing code")) {
-                val ctx = appContext
-                if (ctx != null && Backend.rotate(ctx)) {
-                    resp = post("/api/device/claim", body)
-                }
-            }
+            if (!reason.contains("Invalid pairing code")) break
+            val ctx = appContext
+            if (ctx == null || !Backend.rotate(ctx)) break
+            resp = post("/api/device/claim", body)
+            attempts++
         }
 
         val result = resp ?: return null

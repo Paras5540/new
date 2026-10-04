@@ -29,17 +29,25 @@ object Backend {
      * fallbacks so a deployment switch does not require a new APK.
      *
      * ORDER MATTERS, because the pairing code is created on ONE deployment: the
-     * device must ask that same deployment for it. Asking a different one
-     * never finds the code and answers the user with a misleading
-     * "Invalid pairing code" for a code that was perfectly valid.
+     * device must ask that same deployment for it. Asking a different one never
+     * finds the code and answers the user with a misleading "Invalid pairing
+     * code" for a code that was perfectly valid.
      *
-     * `blessed-goat-500` is FIRST because that is the deployment `convex dev`
-     * actually pushes to, so it is the one carrying every current function
-     * (mic frames, blob streaming). `valuable-goldfish-43` is still listed, but
-     * it is PAUSED, so [resolve] skips it and lands here instead — the phone
-     * therefore keeps working without any APK change.
+     * `notable-snail-502` is FIRST because that is what the DASHBOARD uses: it is
+     * the deployment the published web build resolves to (its configured URL is
+     * tried before any fallback and it answers the health probe), so that is
+     * where the dashboard writes the pairing code. Listing it here is what makes
+     * the phone and the dashboard agree. It was missing, and the symptom was
+     * exactly `HTTP 400 Invalid pairing code` on a code the user had just
+     * created on screen.
+     *
+     * `blessed-goat-500` follows: it is what `convex dev` pushes to, so it is
+     * where the newest code lands first, and it is a live fallback if the
+     * dashboard ever moves. `valuable-goldfish-43` is PAUSED and is skipped by
+     * [resolve] automatically.
      */
     var candidates: List<String> = listOf(
+        "https://notable-snail-502.convex.site",
         "https://blessed-goat-500.convex.site",
         "https://valuable-goldfish-43.convex.site",
         "https://admired-nightingale-732.convex.site",
