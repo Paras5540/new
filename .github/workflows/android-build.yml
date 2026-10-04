@@ -108,15 +108,21 @@ jobs:
           # deployment that the dashboard wrote the code to. If valuable-goldfish
           # is not listed FIRST the phone claims against the wrong database and
           # reports "Invalid pairing code" for a perfectly valid code.
-          need Backend.kt 'https://valuable-goldfish-43.convex.site' 'the deployment the dashboard creates codes on is missing from Backend.candidates'
+          need Backend.kt 'https://valuable-goldfish-43.convex.site' 'the previously-primary deployment is missing from Backend.candidates'
+          need Backend.kt 'https://blessed-goat-500.convex.site' 'the deployment `convex dev` actually pushes to (and that serves every current function) is missing from Backend.candidates'
           need Backend.kt 'fun rotate(context: Context): Boolean' 'deployment-mismatch recovery (Backend.rotate) is missing'
           if [ -f "$SRC/Backend.kt" ]; then
+            # ORDER MATTERS: the pairing code is written to ONE deployment, so
+            # the phone must ask that same deployment for it. valuable-goldfish
+            # -43 is PAUSED and cannot run a single function, and the dashboard
+            # probe now skips it for the same reason -- so blessed-goat-500 is
+            # the deployment both sides agree on and must be FIRST.
             order=$(grep -oE 'https://[a-z0-9-]+\.convex\.site' "$SRC/Backend.kt" | head -2 | tr '\n' ' ')
             case "$order" in
-              "https://valuable-goldfish-43.convex.site http"*|"https://valuable-goldfish-43.convex.site")
+              "https://blessed-goat-500.convex.site http"*|"https://blessed-goat-500.convex.site")
                 ;;
               *)
-                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order). valuable-goldfish-43 must be FIRST or pairing fails with \"Invalid pairing code\"."
+                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order). blessed-goat-500 must be FIRST -- it is the deployment the dashboard creates codes on and the only un-paused one; otherwise pairing fails with \"Invalid pairing code\"."
                 echo "Backend.kt - candidate order wrong ($order)" >> "$REPORT"
                 MISSING=1
                 ;;
@@ -366,6 +372,11 @@ jobs:
           # A one-second cadence means a partial clip is a very common case;
           # uploading one is an audible click.
           need MicLiveService.kt 'private const val CLIP_SAMPLES = SAMPLE_RATE // 1 second per clip' 'mic clips are not one second (dashboard audio lags)'
+          # CHANNEL is the notification channel *id* (a String). AudioRecord needs
+          # the integer AudioFormat.CHANNEL_IN_*, so the capture calls must use a
+          # separate constant -- conflating the two is a compile error.
+          need MicLiveService.kt 'private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO' 'AudioRecord is being fed the String notification channel id instead of a channel-in constant (compile error)'
+          need MicLiveService.kt 'AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)' 'getMinBufferSize is called with the notification channel id'
           if [ -f "$SRC/MicLiveService.kt" ]; then
             if CODE "$SRC/MicLiveService.kt" | grep -q "SAMPLE_RATE \* 2"; then
               echo "::error::STALE: MicLiveService.kt is back to 2-second clips. At a 1s refresh the dashboard audio is always two seconds behind. Re-upload it."
