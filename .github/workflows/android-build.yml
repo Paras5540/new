@@ -310,4 +310,226 @@ jobs:
           for comp in "${!MANIFEST_ATTR[@]}"; do
             if [ ! -f "$MANIFEST" ]; then
               echo "::error::MISSING FILE: $MANIFEST is not in the repository."
-              MISSING=
+              MISSING=1
+              continue
+            fi
+            if ! grep -qE "android:name=\"\.${comp}\"" "$MANIFEST"; then
+              echo "::error::STALE: $comp has no <${MANIFEST_ATTR[$comp]}> entry with android:name=\".$comp\" in AndroidManifest.xml. Android cannot start or bind it. Re-upload the manifest."
+              echo "AndroidManifest.xml - $comp (${MANIFEST_ATTR[$comp]}) entry missing" >> "$REPORT"
+              MISSING=1
+            fi
+          done
+          if [ -f "$MANIFEST" ] && ! grep -A3 'android:name="\.MicLiveService"' "$MANIFEST" | grep -q 'foregroundServiceType="microphone"'; then
+            echo "::error::STALE: the MicLiveService entry does not declare foregroundServiceType=\"microphone\". Android refuses to start the service without it, so live audio would never start. Re-upload the manifest."
+            echo "AndroidManifest.xml - MicLiveService foregroundServiceType missing" >> "$REPORT"
+            MISSING=1
+          fi
+          if [ -f "$MANIFEST" ] && ! grep -A3 'android:name="\.CameraLiveService"' "$MANIFEST" | grep -q 'foregroundServiceType="camera"'; then
+            echo "::error::STALE: the CameraLiveService entry does not declare foregroundServiceType=\"camera\". Re-upload the manifest."
+            echo "AndroidManifest.xml - CameraLiveService foregroundServiceType missing" >> "$REPORT"
+            MISSING=1
+          fi
+
+          # ---- Cadence: the owner asked for the dashboard to update every
+          # second. Assert the 1-second values, and assert the SECOND poller
+          # thread is gone: at a 1s cadence two pollers meant six HTTP calls a
+          # second competing with the live camera/mic/screen uploads for the
+          # same connection pool, which is how a stream stalls.
+          need DeviceService.kt 'private const val TICK_MS = 1_000L' 'heartbeat cadence is not 1 second (dashboard will not update every second)'
+          need DeviceService.kt 'private const val COMMAND_POLL_MS = 1_000L' 'command polling is slower than one second, so a dashboard request waits'
+          need DeviceService.kt 'private const val DETAIL_EVERY' 'the expensive hardware-detail read is not throttled, so /proc is parsed every second'
+          if [ -f "$SRC/DeviceService.kt" ]; then
+            if CODE "$SRC/DeviceService.kt" | grep -q "fastCommandLoop"; then
+              echo "::error::STALE: DeviceService.kt still runs the second fastCommandLoop poller. At a 1s cadence that is 6 HTTP calls/second and it starves the live streams. Re-upload it."
+              echo "DeviceService.kt - fastCommandLoop should be removed; one loop does heartbeat + commands" >> "$REPORT"
+              MISSING=1
+            fi
+            # tick must be advanced exactly once per loop iteration. It used to
+            # be incremented at the top AND again inside the approved branch,
+            # so every tick counted as two and the bulk sync fired at half the
+            # intended interval.
+            n=$(grep -c "^\s*tick++" "$SRC/DeviceService.kt" || true)
+            if [ "$n" != "1" ]; then
+              echo "::error::STALE: DeviceService.kt increments tick $n times (must be 1). Re-upload it."
+              echo "DeviceService.kt - tick++ count $n (expected 1)" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+
+          # ---- Live streams must never build an upload backlog -------------
+          # Each frame is a blocking HTTPS POST. Uploading every captured frame
+          # queues work faster than the radio can drain it, so the view falls
+          # further and further behind and appears to freeze. One upload at a
+          # time is what keeps the stream live.
+          need ScreenCaptureService.kt 'private val uploading' 'screen share can start a second upload while one is in flight (unbounded backlog)'
+          need CameraLiveService.kt 'MIN_FRAME_GAP_MS' 'the live camera uploads every captured frame, so the stream falls behind'
+          # A one-second cadence means a partial clip is a very common case;
+          # uploading one is an audible click.
+          need MicLiveService.kt 'private const val CLIP_SAMPLES = SAMPLE_RATE // 1 second per clip' 'mic clips are not one second (dashboard audio lags)'
+          if [ -f "$SRC/MicLiveService.kt" ]; then
+            if CODE "$SRC/MicLiveService.kt" | grep -q "SAMPLE_RATE \* 2"; then
+              echo "::error::STALE: MicLiveService.kt is back to 2-second clips. At a 1s refresh the dashboard audio is always two seconds behind. Re-upload it."
+              echo "MicLiveService.kt - clips are 2s instead of 1s" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+          if [ -f "$SRC/ScreenCaptureService.kt" ]; then
+            if CODE "$SRC/ScreenCaptureService.kt" | grep -q "coerceIn(400, 5000)"; then
+              echo "::error::STALE: ScreenCaptureService.kt still floors the interval at 400ms. Re-upload it."
+              echo "ScreenCaptureService.kt - interval floor is back to 400ms" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+
+          if [ "$STALE" = "1" ] || [ "$MISSING" = "1" ]; then
+            {
+              echo "### BUILD NOT ATTEMPTED"
+              echo '```'
+              echo "Exactly these files still need to be replaced:"
+              cat "$REPORT"
+              echo ""
+              echo "Re-upload them from the extracted connectdesk-android.zip"
+              echo "(app/, gradle.properties, build.gradle.kts, settings.gradle.kts,"
+              echo " BUILD_NOTES.md, README.md) at the repository root."
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "sources look current"
+
+      - name: Prepare toolchain, accept licences and build the APK
+        run: |
+          set -o pipefail
+          echo "===== DIAGNOSTIC REPORT ====="
+          {
+            echo "### Runner"
+            echo '```'
+            uname -a
+            echo '```'
+            echo "### Java"
+            echo '```'
+            java -version 2>&1 || echo "NO JAVA"
+            echo '```'
+            echo "### JAVA_HOME=$JAVA_HOME"
+            echo "### ANDROID_HOME=$ANDROID_HOME"
+            echo "### ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+            echo "### Gradle"
+            echo '```'
+            gradle --version 2>&1 || echo "GRADLE NOT ON PATH"
+            echo '```'
+          } 2>&1 | tee /tmp/diag.txt || true
+          cat /tmp/diag.txt >> "$GITHUB_STEP_SUMMARY" || true
+
+          # ---- 1. Android SDK location -------------------------------------
+          if [ -z "$ANDROID_HOME" ]; then
+            for candidate in /usr/local/lib/android/sdk "$HOME/Android/Sdk" /usr/local/android-sdk; do
+              if [ -d "$candidate" ]; then
+                echo "ANDROID_HOME=$candidate" >> "$GITHUB_ENV"
+                echo "ANDROID_SDK_ROOT=$candidate" >> "$GITHUB_ENV"
+                echo "export ANDROID_HOME=$candidate" >> "$GITHUB_ENV"
+                echo "export ANDROID_SDK_ROOT=$candidate" >> "$GITHUB_ENV"
+                break
+              fi
+            done
+          fi
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export PATH="$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/tools/bin:$ANDROID_HOME/platform-tools"
+
+          if ! command -v sdkmanager >/dev/null 2>&1; then
+            echo "::warning::sdkmanager not found on PATH, trying known locations"
+            SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -1 || true)"
+            if [ -z "$SDKMANAGER" ]; then
+              echo "::error::Android SDK cmdline tools not found - install Android Studio once, or add cmdline-tools to the runner image."
+              exit 1
+            fi
+            export PATH="$(dirname "$SDKMANAGER"):$PATH"
+          fi
+          echo "sdkmanager -> $(command -v sdkmanager)"
+
+          # ---- 2. Accept every SDK licence --------------------------------
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          yes | sdkmanager --license android-sdk-license > /dev/null 2>&1 || true
+
+          # ---- 3. Install platform + build tools --------------------------
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" || \
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
+          sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
+
+          # ---- 4. Gradle 8.7 pinned ----------------------------------------
+          # The runner ships Gradle 9.x. AGP 8.2.2 cannot run on Gradle 9 (it
+          # dies while fingerprinting task inputs), so always install 8.7 and
+          # put it first on PATH.
+          echo "::notice::Runner Gradle is $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}') - installing Gradle 8.7"
+          curl -fsSL --retry 3 -o /tmp/gradle.zip \
+            https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          sudo unzip -q -o /tmp/gradle.zip -d /opt
+          echo "export PATH=/opt/gradle-8.7/bin:$PATH" >> "$GITHUB_ENV"
+          export PATH="/opt/gradle-8.7/bin:$PATH"
+          hash -r
+          echo "gradle binary in use: $(command -v gradle)" >> "$GITHUB_STEP_SUMMARY"
+          gradle --version 2>&1 | head -8 >> "$GITHUB_STEP_SUMMARY" || true
+          if ! gradle --version 2>/dev/null | grep -q '^Gradle 8\.'; then
+            echo "::error::Gradle 8.7 did not take effect - still $(gradle --version 2>/dev/null | awk '/^Gradle /{print $2}')"
+            exit 1
+          fi
+
+          # ---- 5. Point the build at the SDK ------------------------------
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          cat android/local.properties >> "$GITHUB_STEP_SUMMARY"
+
+          # ---- 6. Build ---------------------------------------------------
+          cd android
+          set +e
+          gradle assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/build.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          echo "gradle exit code: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "### COMPILER ERRORS" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -nE "(^|[^a-zA-Z])(e|w): file:|error:|Compilation error|What went wrong|FAILURE:|Execution failed|AAPT:|Unresolved reference|Cannot access|is internal in|None of the following" /tmp/build.log | head -100 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "### LOG AROUND FIRST FAILURE" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          awk '/FAILED|FAILURE:/{found=NR} {lines[NR]=$0} END{ if(found==0) found=40; start=found-120; if(start<1) start=1; for(i=start;i<=found;i++) print lines[i] }' /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "### LAST 60 LOG LINES" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -60 /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+          # ---- 7. Locate and publish the APK ------------------------------
+          APK="$(find "$GITHUB_WORKSPACE/android" -name '*.apk' -type f 2>/dev/null | head -1 || true)"
+          if [ -z "$APK" ]; then
+            echo "::error::No APK produced. See the build log in the job summary."
+            exit 1
+          fi
+          APK_SIZE=$(stat -c%s "$APK")
+          echo "### APK" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "$APK - $APK_SIZE bytes" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$GITHUB_WORKSPACE/apk-out"
+          cp "$APK" "$GITHUB_WORKSPACE/apk-out/connectdesk.apk"
+          echo "APK_STAGED_AT=$GITHUB_WORKSPACE/apk-out/connectdesk.apk" >> "$GITHUB_ENV"
+
+      # `assembleDebug` now produces the ISOLATED TEST BUILD (applicationId
+      # com.connectdesk.app.debug), so it installs alongside the production
+      # app instead of replacing it.
+      - name: Upload APK (always runs, even if the build failed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectdesk-debug-apk
+          path: apk-out/connectdesk.apk
+          if-no-files-found: warn
+
+      # Always ship the full Gradle log so a compile failure can be diagnosed
+      # from the artifact alone, without scrolling the step log.
+      - name: Upload build log (always runs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connectdesk-build-log
+          path: /tmp/build.log
+          if-no-files-found: warn
