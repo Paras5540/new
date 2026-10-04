@@ -66,7 +66,7 @@ jobs:
               echo "MISSING FILE: $1" >> "$REPORT"
               MISSING=1
             elif ! grep -qF "$2" "$SRC/$1"; then
-              echo "::error::STALE: $1 does not contain \"$2\" ($3). This is the OLD version - re-upload it."
+              echo "::error::STALE: $1 does not contain \"$2\" ($3). Re-upload $1. IF YOUR SOURCE IS CURRENT, THE REAL PROBLEM IS A STALE COPY OF THIS WORKFLOW FILE (.github/workflows/android-build.yml) -- an out-of-date guard calls good code \"old\". Re-upload the workflow too, then re-run."
               echo "STALE: $1 - missing marker: $2" >> "$REPORT"
               MISSING=1
             fi
@@ -110,25 +110,33 @@ jobs:
           # reports "Invalid pairing code" for a perfectly valid code.
           need Backend.kt 'https://valuable-goldfish-43.convex.site' 'the previously-primary deployment is missing from Backend.candidates'
           need Backend.kt 'https://blessed-goat-500.convex.site' 'the deployment `convex dev` actually pushes to (and that serves every current function) is missing from Backend.candidates'
+          # The dashboard writes the pairing code on the deployment its build
+          # resolves to. Omitting it from the phone is exactly what produced
+          # `HTTP 400 Invalid pairing code` for a code created on screen.
+          need Backend.kt 'https://notable-snail-502.convex.site' 'the deployment the DASHBOARD creates pairing codes on is missing from Backend.candidates, so every pairing fails with HTTP 400'
           need Backend.kt 'fun rotate(context: Context): Boolean' 'deployment-mismatch recovery (Backend.rotate) is missing'
           if [ -f "$SRC/Backend.kt" ]; then
             # ORDER MATTERS: the pairing code is written to ONE deployment, so
-            # the phone must ask that same deployment for it. valuable-goldfish
-            # -43 is PAUSED and cannot run a single function, and the dashboard
-            # probe now skips it for the same reason -- so blessed-goat-500 is
-            # the deployment both sides agree on and must be FIRST.
+            # the phone must ask that same deployment for it. The dashboard
+            # resolves to notable-snail-502 (its configured URL is probed before
+            # any fallback and it is healthy), so that one must be FIRST here or
+            # pairing returns HTTP 400 "Invalid pairing code".
             order=$(grep -oE 'https://[a-z0-9-]+\.convex\.site' "$SRC/Backend.kt" | head -2 | tr '\n' ' ')
             case "$order" in
-              "https://blessed-goat-500.convex.site http"*|"https://blessed-goat-500.convex.site")
+              "https://notable-snail-502.convex.site http"*|"https://notable-snail-502.convex.site")
                 ;;
               *)
-                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order). blessed-goat-500 must be FIRST -- it is the deployment the dashboard creates codes on and the only un-paused one; otherwise pairing fails with \"Invalid pairing code\"."
+                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order). notable-snail-502 must be FIRST -- it is the deployment the dashboard creates pairing codes on; otherwise pairing fails with HTTP 400 \"Invalid pairing code\"."
                 echo "Backend.kt - candidate order wrong ($order)" >> "$REPORT"
                 MISSING=1
                 ;;
             esac
           fi
-          need ApiClient.kt 'if (reason.contains("Invalid pairing code"))' 'claim() no longer retries on the other deployment'
+          # Match the expression, not the `if`/`if (!...)` wrapper: the retry walk was
+          # extended to loop over every candidate, and a marker that pins the
+          # negatin would call the NEW file "old" -- which is exactly the
+          # false alarm this guard is supposed to avoid.
+          need ApiClient.kt 'reason.contains("Invalid pairing code")' 'claim() no longer retries on the other deployment'
           need ApiClient.kt '.url("$url/api/device/status")' 'probe is not asserting on our own response shape'
 
           # ---- No automatic logout -------------------------------------------
