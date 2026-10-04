@@ -228,7 +228,7 @@ jobs:
             fi
             n=$(grep -c "switchCameraLive.setOnCheckedChangeListener" "$SRC/MainActivity.kt" || true)
             if [ "$n" != "1" ]; then
-              echo "::error::STALE: MainActivity.kt has $n camera listeners (must be 1). Re-upload MainActivity.kt."
+              echo "::error::STALE: MainActivity.kt has $n camera listeners (must be 1). Re-upload it."
               echo "MainActivity.kt - camera listener count $n (expected 1)" >> "$REPORT"
               MISSING=1
             fi
@@ -237,7 +237,7 @@ jobs:
             # never caught it - only a count does.
             n=$(grep -c "switchCameraLive.isChecked = CameraLiveService.isArmed(this)" "$SRC/MainActivity.kt" || true)
             if [ "$n" -gt 1 ]; then
-              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload MainActivity.kt."
+              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload it."
               echo "MainActivity.kt - camera-live 'connected' block repeated $n times (expected 1)" >> "$REPORT"
               MISSING=1
             fi
@@ -257,8 +257,7 @@ jobs:
             # live view black: the preview template does not drive the JPEG
             # still-capture pipeline, and the hard-coded 480x640 was usually
             # not even an advertised output size. YUV_420_888 as the preview stream
-            # format is the combination that actually delivers frames.
-            if ! grep -q "YUV_420_888" "$SRC/CameraLiveService.kt"; then
+            # format is the combination that actually delivers frames.            if ! grep -q "YUV_420_888" "$SRC/CameraLiveService.kt"; then
               echo "::error::STALE: CameraLiveService.kt is not using YUV_420_888 for the preview stream. Re-upload it."
               echo "CameraLiveService.kt - preview stream is not YUV_420_888 (black live view)" >> "$REPORT"
               MISSING=1
@@ -411,6 +410,188 @@ jobs:
             if CODE "$SRC/ScreenCaptureService.kt" | grep -q "coerceIn(400, 5000)"; then
               echo "::error::STALE: ScreenCaptureService.kt still floors the interval at 400ms. Re-upload it."
               echo "ScreenCaptureService.kt - interval floor is back to 400ms" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+
+          # ---- Live camera must not kill the app it runs in ----------------
+          # An ImageReader created with maxImages=N allows exactly N undrained
+          # images. The camera produces ~30 frames/s and uploadFrame keeps
+          # roughly one per second, so any path that returns without
+          # Image.close() leaks ~29 images a second. The reader overflows and
+          # the next acquireLatestImage() throws IllegalStateException on the
+          # MAIN looper -- which is a process kill. The symptom was "live
+          # camera ON karne par app band ho jaata hai", with no error shown.
+          #
+          # So both halves are load-bearing and both are checked: the close is
+          # in a finally, and the buffer count has headroom.
+          need CameraLiveService.kt 'private fun uploadFrame(image: Image)' 'the Image close was moved off upload() into a helper (check the finally still closes on every path)'
+          if [ -f "$SRC/CameraLiveService.kt" ]; then
+            # The close must live in a `finally`, which is the only construct
+            # that survives a new early `return` being added above it.
+            if ! CODE "$SRC/CameraLiveService.kt" \
+              | tr '\n' ' ' \
+              | grep -q 'private fun upload(image: Image) {.*finally {.*image.close()'; then
+              echo "::error::STALE: CameraLiveService.kt no longer closes the Image in a finally. The reader will hit maxImages and the main looper will throw, killing the app. Re-upload it."
+              echo "CameraLiveService.kt - Image is not closed in a finally in upload()" >> "$REPORT"
+              MISSING=1
+            fi
+            # maxImages must be > 2: two leaves no headroom while a frame is
+            # being JPEG-encoded on the worker thread.
+            #
+            # The previous version of this check was `grep -q PATTERN -A2`, which
+            # can never fire: -q suppresses output, so the -A2 context it was
+            # written to inspect is discarded and the second grep always saw an
+            # empty stream. The negative suite caught it.
+            #
+            # Reading a FIXED -A window is the same mistake in a milder form --
+            # the buffer argument sits after a block comment, so any small
+            # window misses it. So the whole call is captured (from
+            # `newInstance(` to its closing paren) and the last number in it is
+            # the buffer count. That works for both the multi-line and
+            # single-line spellings.
+            bufs=$(CODE "$SRC/CameraLiveService.kt" \
+              | awk '/ImageReader\.newInstance\(/{f=1} f{print} f&&\)/{exit}' \
+              | grep -oE '[0-9]+' | tail -1)
+            if [ "$bufs" != "3" ]; then
+              echo "::error::STALE: CameraLiveService.kt ImageReader maxImages is '${bufs:-none}' (must be 3). Two leaves no headroom while a frame is being encoded and the reader overflows, killing the app. Re-upload it."
+              echo "CameraLiveService.kt - ImageReader maxImages = ${bufs:-none} (expected 3)" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+
+          # ---- Screen share: consent is reused, not re-asked -------------
+          # Android raises the MediaProjection dialog on every
+          # createScreenCaptureIntent(), so asking per dashboard click is the
+          # platform default. The fix parks the granted MediaProjection and
+          # reuses it. `projection.stop()` in onDestroy is what BURNS that
+          # consent, so its return is the regression that brings the dialog
+          # back -- and it is easy to "tidy up" by accident.
+          need ScreenCaptureService.kt 'val canReuseConsent' 'the parked MediaProjection / canReuseConsent path is gone, so consent is re-asked on every view'
+          need ScreenConsentActivity.kt 'ScreenCaptureService.startWithStoredConsent' 'ScreenConsentActivity always shows the dialog instead of reusing stored consent'
+          if [ -f "$SRC/ScreenCaptureService.kt" ]; then
+            if CODE "$SRC/ScreenCaptureService.kt" | sed -n '/override fun onDestroy/,/^    }/p' | grep -q 'projection?.stop()'; then
+              echo "::error::STALE: ScreenCaptureService.onDestroy stops the MediaProjection again, which invalidates the stored consent and brings back the dialog on every view. Re-upload it."
+              echo "ScreenCaptureService.kt - onDestroy calls projection?.stop()" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+
+          # ---- A photo is a notification, not a prompt -------------------
+          # The CAMERA permission is granted once, during setup. capturePhoto
+          # therefore always notifies and then captures directly, with the
+          # tap-to-allow prompt kept only as a fallback for the case where the
+          # OS refuses a camera open with no visible activity.
+          need MainActivity.kt 'var isInForeground: Boolean = false' 'MainActivity no longer publishes whether it is visible'
+
+          # ---- The dashboard may ASK for camera/mic; it may not START them --
+          # A stream only ever begins in one of two ways, and BOTH are gated on
+          # something the phone owner already did:
+          #
+          #   1. the owner has armed that stream in the app before, in which
+          #      case a dashboard ON restarts it directly (no tap, by design);
+          #   2. they have not, in which case askOwnerOnDevice posts a
+          #      notification and the owner decides.
+          #
+          # So the invariant is a PAIRING, not a bare absence of `.start(`:
+          # every start must be matched by an isArmed gate. An earlier version
+          # of this check simply forbade `.start(` in the function, which
+          # rejected the correct code -- the owner's own prior consent IS a
+          # legitimate gate. Counting both sides keeps the real property
+          # enforced and catches an ungated start being added.
+          need CommandWorker.kt 'private fun requestLiveStream' 'the dashboard request handler is gone'
+          need CommandWorker.kt 'private fun askOwnerOnDevice' 'the "ask the owner on device" prompt is gone, so ON would start capture silently'
+          if [ -f "$SRC/CommandWorker.kt" ]; then
+            live=$(CODE "$SRC/CommandWorker.kt" \
+              | sed -n '/private fun requestLiveStream/,/^    private fun askOwnerOnDevice/p')
+            starts=$(printf '%s\n' "$live" | grep -cE '(CameraLiveService|MicLiveService)\.start\(' || true)
+            gates=$(printf '%s\n' "$live" | grep -cE '(CameraLiveService|MicLiveService)\.isArmed\(' || true)
+            if [ "$starts" -eq 0 ]; then              echo "::error::STALE: requestLiveStream never starts a stream. It must start directly when the owner already armed it. Re-upload it."
+              echo "CommandWorker.kt - requestLiveStream has no start call" >> "$REPORT"
+              MISSING=1
+            elif [ "$starts" != "$gates" ]; then
+              echo "::error::STALE: requestLiveStream has $starts start call(s) but only $gates isArmed gate(s). Every start must be gated on the phone owner's own prior consent, or it is a remote microphone. Re-upload it."
+              echo "CommandWorker.kt - requestLiveStream starts=$starts gates=$gates (must be equal)" >> "$REPORT"
+              MISSING=1
+            fi
+          fi
+
+          # ---- Screen share must not need a tap once consent exists -------
+          # The consent is granted once. After that, startScreen must reuse the
+          # parked MediaProjection and start the VirtualDisplay straight from
+          # this foreground service. Falling through to the notification +
+          # ScreenConsentActivity path every time is what made every dashboard
+          # "View screen" ask for a tap it did not need.
+          need CommandWorker.kt 'ScreenCaptureService.startWithStoredConsent(context, width, intervalMs)' 'startScreen does not take the no-tap fast path, so every view still needs a tap'
+          need CommandWorker.kt 'postShareNotice(context)' 'the no-tap screen-share path starts without telling the owner it began'
+
+          # ---- The requested lens must reach the device --------------------
+          # A server-side default silently hands back the BACK camera when the
+          # owner asked for the front one, which is exactly how "live front
+          # camera" reads as broken. The facing is carried in the payload.
+          need CommandWorker.kt 'payload.optString("facing", "back")' 'the live-camera request no longer reads the requested lens'
+          need CameraLiveService.kt 'setArmedFacing(context, facing)' 'the lens is no longer remembered, so every restart falls back to the back camera'
+
+          # ---- Permissions are asked ONCE, at setup, and never again ------
+          # The complaint this replaces: flipping live camera asked for CAMERA,
+          # flipping live mic asked for RECORD_AUDIO, arming call recording
+          # asked for RECORD_AUDIO and READ_PHONE_STATE -- so the same
+          # permission could be demanded twice, from two screens, forever.
+          #
+          # The invariant is a COUNT, not a marker: PermissionSetup.kt must be
+          # the only file in the client that calls requestPermissions at all.
+          # A marker check would pass while a second call site was added next to
+          # it, which is the exact regression being guarded.
+          need PermissionSetup.kt 'fun allRuntimePermissions()' 'the one-time permission batch is gone'
+          need PermissionSetup.kt 'fun runOnce(activity: Activity): Boolean' 'the one-shot guard around the permission batch is gone, so prompts can reappear on every launch'
+          if [ -f "$SRC/PermissionSetup.kt" ]; then
+            # Count real calls, ignoring comments.
+            #
+            # The pattern is deliberately UNANCHORED (`requestPermissions(`,
+            # no leading dot). The previous version required a `.` before it,
+            # which only matched the `activity.requestPermissions(` form inside
+            # PermissionSetup itself and let the ordinary bare
+            # `requestPermissions(...)` call -- which is exactly how an Activity
+            # calls it, and how the feature switches used to -- walk straight
+            # through. The negative suite caught that too.
+            n=$(CODE "$SRC/PermissionSetup.kt" | grep -c 'requestPermissions(' || true)
+            if [ "$n" != "1" ]; then
+              echo "::error::STALE: PermissionSetup.kt makes $n requestPermissions call(s); it must be exactly 1 (the single setup batch). Re-upload it."
+              echo "PermissionSetup.kt - requestPermissions call count = $n (expected 1)" >> "$REPORT"
+              MISSING=1
+            fi
+          else
+            echo "::error::STALE: PermissionSetup.kt is missing entirely. Permissions must be collected once, in one batch. Re-upload it."
+            echo "PermissionSetup.kt - file missing" >> "$REPORT"
+            MISSING=1
+          fi
+          # No OTHER file may ask for a runtime permission.
+          others=0
+          for f in "$SRC"/*.kt; do
+            case "$(basename "$f")" in
+              PermissionSetup.kt) continue ;;
+            esac
+            c=$(CODE "$f" | grep -c 'requestPermissions(' || true)
+            others=$((others + c))
+          done
+          if [ "$others" != "0" ]; then
+            echo "::error::STALE: $others requestPermissions call(s) outside PermissionSetup.kt. Permissions are collected once at setup; a feature screen must never prompt. Re-upload it."
+            echo "Other files - requestPermissions call count = $others (expected 0)" >> "$REPORT"
+            MISSING=1
+          fi
+
+          # ---- A photo is a notification, not a prompt -------------------
+          # capturePhoto always notifies, then captures directly. The
+          # tap-to-allow prompt survives only as a fallback for the case where
+          # the OS refuses a camera open with no visible activity, so the
+          # direct call must still be the primary path.
+          need CommandWorker.kt 'postPhotoNotice(context, facing)' 'the per-capture "photo is being taken" notification is gone'
+          if [ -f "$SRC/CommandWorker.kt" ]; then
+            if ! CODE "$SRC/CommandWorker.kt" \
+              | sed -n '/private fun capturePhoto/,/^    private fun postTapToAllow/p' \
+              | grep -q 'CameraWorker.capture(context, token, facing)'; then
+              echo "::error::STALE: capturePhoto no longer captures directly, so every photo needs a tap again. Re-upload it."
+              echo "CommandWorker.kt - capturePhoto lost the direct capture path" >> "$REPORT"
               MISSING=1
             fi
           fi
