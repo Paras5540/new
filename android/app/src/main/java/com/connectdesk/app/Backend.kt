@@ -47,6 +47,23 @@ object Backend {
      * [resolve] automatically.
      */
     var candidates: List<String> = listOf(
+        // ACTIVE. The whole project moved to a NEW Convex account
+        // (`dev/rahula5540` / cautious-squirrel-266) because the previous team
+        // hit its free-plan ceiling and Convex disabled the deployments:
+        // every invoke returned
+        //     HTTP 500 You have exceeded the free plan limits
+        // which is what broke sign-in with the generic
+        // "Connection lost while action was in flight".
+        //
+        // This is FIRST and not merely added to the list because pairing
+        // codes are written by the dashboard onto ONE deployment, and the
+        // phone has to ask that same deployment for them. The old entries are
+        // kept only as harmless fallbacks; they answer `no_session`/`Unknown
+        // device token` now that they hold no current code.
+        //
+        // `.convex.site` is the HTTP Actions URL -- the host that serves the
+        // `/api/device/*` routes -- NOT the `.convex.cloud` websocket host.
+        "https://cautious-squirrel-266.convex.site",
         "https://notable-snail-502.convex.site",
         "https://blessed-goat-500.convex.site",
         "https://valuable-goldfish-43.convex.site",
