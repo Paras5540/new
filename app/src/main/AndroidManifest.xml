@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Internet: server API calls (heartbeat, status, notification sync) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Auto-start after reboot / app update / network return, so a device that
+         was set up once keeps reporting without the user opening the app. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Call recording: the device's own microphone plus call state, so the
+         recorder only starts once the other side actually picks up. Recording
+         is armed by the phone owner in-app, shows a persistent notification
+         and Android's mic indicator, and is deleted from the phone after
+         upload. It captures the device microphone only — Android gives no app
+         access to the other party's audio. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+
+    <!-- Notification sync: user grants Notification Listener access in Settings.
+         Purpose explained in-app before the settings deep-link. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required to raise the screen-share consent prompt while the app is in
+         the background (Android 10+ blocks background activity launches). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!-- Data sync permissions: each is requested at runtime ONLY when the user
+         enables that feature in the app, with an explanation screen first.
+         Revoking any of them in Android Settings disables that sync instantly. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+
+    <!-- Camera: only ever opened for a single, on-request frame. Requires the
+         dashboard's camera capability AND the user's runtime permission. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+
+    <!-- Installed apps + usage statistics (which apps, how long each was used).
+         PACKAGE_USAGE_STATS is an AppOps toggle the user flips in Settings, not
+         a dialog — Android requires that for usage data. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+    <!-- Package visibility (Android 11+). ConnectDesk is a device-management
+         app, which is one of the permitted uses for this permission; it is
+         used only to list which apps are installed, never to read their data. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+    <!-- Reading the shared file index (Android 11+ scoped storage). -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.ConnectDesk"
+        android:allowBackup="false">
+
+        <!-- Visible main activity: pairing + status + disconnect.
+             This app NEVER hides its icon; uninstall is always possible. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Screen-share consent host: transparent, launched only when the
+             dashboard requests a screen session. The OS MediaProjection
+             dialog it raises CANNOT be suppressed — explicit consent. -->
+        <activity
+            android:name=".ScreenConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Foreground service: keeps heartbeat + notification sync alive while
+             connected. Shows a persistent "ConnectDesk connected" notification. -->
+        <service
+            android:name=".DeviceService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- Auto-restart receiver: reboot, app update, and network return all
+             bring the sync service back without opening the app. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <!--
+                    BootReceiver also handles CONNECTIVITY_CHANGE, but it was
+                    only implemented in code and never declared here. On
+                    Android 8+ an implicit broadcast with no manifest entry is
+                    NOT delivered, so the service stayed dead after the phone
+                    dropped Wi-Fi and came back - the dashboard would show the
+                    device offline until the app was opened by hand.
+                -->
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Camera consent host: opens for one frame only, on the user's tap. -->
+        <activity
+            android:name=".CameraConsentActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- Call recorder. Armed ONLY by the phone owner via the in-app switch;
+             the dashboard can switch it off remotely but never on. Records the
+             device microphone, shows a persistent notification for the whole
+             call, and deletes the file after upload. -->
+        <service
+            android:name=".CallRecorderService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Screen capture service (Android 10+): streams JPEG frames only
+             while a screen session is active. Shows its own persistent
+             notification with a Stop button; ends when the user or the
+             dashboard stops the session. -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!--
+             Live camera streaming. Armed ONLY by the phone owner from the
+             app's own UI; the dashboard can request a stop but can never
+             start it. While it runs it must hold the CAMERA foreground
+             service type, and Android shows a permanent notification for
+             that, which is the visible consent signal.
+        -->
+        <service
+            android:name=".CameraLiveService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
+
+        <!-- Live microphone streaming. Armed ONLY by the phone owner from the
+             app; the dashboard can listen and ask it to stop, never start it.
+             Android requires the microphone foreground-service type plus a
+             permanent notification, and that notification is the visible
+             consent signal — it is not decoration. -->
+        <service
+            android:name=".MicLiveService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Notification listener: syncs notifications to the dashboard, only
+             while the user enabled it AND the dashboard toggle is on. Content
+             is masked on-device before leaving the phone. -->
+        <service
+            android:name=".NotificationSyncService"
+            android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

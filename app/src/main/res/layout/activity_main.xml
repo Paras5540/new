@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name"
+            android:textColor="@color/brand_secondary"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/pair_explain"
+            android:textColor="#B8C7D1"
+            android:textSize="14sp" />
+
+        <EditText
+            android:id="@+id/etCode"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="20dp"
+            android:hint="@string/pair_code_hint"
+            android:inputType="textCapCharacters"
+            android:maxLength="8"
+            android:textColor="#E6FBFF"
+            android:textColorHint="#5E7A8A" />
+
+        <Button
+            android:id="@+id/btnPair"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="12dp"
+            android:backgroundTint="@color/brand_primary"
+            android:text="@string/pair_button"
+            android:textColor="@color/brand_on_primary" />
+
+        <TextView
+            android:id="@+id/tvLoginTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/login_title"
+            android:textColor="#E6FBFF"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvLoginExplain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/login_explain"
+            android:textColor="#9FC4D2"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/etUsername"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:autofillHints="username"
+            android:hint="@string/login_username_hint"
+            android:inputType="text"
+            android:maxLength="24"
+            android:textColor="#E6FBFF"
+            android:textColorHint="#5E7A8A" />
+
+        <EditText
+            android:id="@+id/etPassword"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:autofillHints="password"
+            android:hint="@string/login_password_hint"
+            android:inputType="textPassword"
+            android:maxLength="64"
+            android:textColor="#E6FBFF"
+            android:textColorHint="#5E7A8A" />
+
+        <Button
+            android:id="@+id/btnLogin"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="14dp"
+            android:backgroundTint="@color/brand_primary"
+            android:text="@string/login_button"
+            android:textColor="@color/brand_on_primary" />
+
+        <Button
+            android:id="@+id/btnUsePairing"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="8dp"
+            android:backgroundTint="@android:color/transparent"
+            android:text="@string/pair_or_login"
+            android:textColor="#9FC4D2"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvPairTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/pair_title"
+            android:textColor="#E6FBFF"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvConnection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:textColor="#E6FBFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnNotifSettings"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="16dp"
+            android:text="@string/open_notif_settings"
+            android:visibility="gone" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchNotif"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/notif_toggle"
+            android:textColor="#E6FBFF"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvChatsExplain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/chats_toggle_explain"
+            android:textColor="#9FC4D2"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchChats"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/chats_toggle"
+            android:textColor="#E6FBFF"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvClipboardExplain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/clipboard_toggle_explain"
+            android:textColor="#9FC4D2"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchClipboard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/clipboard_toggle"
+            android:textColor="#E6FBFF"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvCallExplain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/call_toggle_explain"
+            android:textColor="#9FC4D2"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchCalls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/call_toggle"
+            android:textColor="#E6FBFF"
+            android:visibility="gone" />
+
+        <!-- Live camera: the ONE place the phone owner can arm streaming. -->
+        <TextView
+            android:id="@+id/tvCameraLiveExplain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/camera_live_toggle_explain"
+            android:textColor="#9FC4D2"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchCameraLive"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/camera_live_toggle"
+            android:textColor="#E6FBFF"
+            android:visibility="gone" />
+
+        <!-- Live microphone: the ONE place the phone owner can arm streaming. -->
+        <TextView
+            android:id="@+id/tvMicLiveExplain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/mic_live_toggle_explain"
+            android:textColor="#9FC4D2"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchMicLive"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/mic_live_toggle"
+            android:textColor="#E6FBFF"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnSelfTest"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:text="@string/run_self_test"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnUsageAccess"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="16dp"
+            android:text="@string/grant_usage_access"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnShare"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="16dp"
+            android:backgroundTint="@color/brand_primary"
+            android:text="@string/share_button"
+            android:textColor="@color/brand_on_primary"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnDisconnect"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="24dp"
+            android:backgroundTint="#B3261E"
+            android:text="@string/disconnect_button"
+            android:textColor="#FFFFFF"
+            android:visibility="gone" />
+    </LinearLayout>
+</ScrollView>
