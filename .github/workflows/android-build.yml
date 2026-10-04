@@ -257,7 +257,8 @@ jobs:
             # live view black: the preview template does not drive the JPEG
             # still-capture pipeline, and the hard-coded 480x640 was usually
             # not even an advertised output size. YUV_420_888 as the preview stream
-            # format is the combination that actually delivers frames.            if ! grep -q "YUV_420_888" "$SRC/CameraLiveService.kt"; then
+            # format is the combination that actually delivers frames.
+            if ! grep -q "YUV_420_888" "$SRC/CameraLiveService.kt"; then
               echo "::error::STALE: CameraLiveService.kt is not using YUV_420_888 for the preview stream. Re-upload it."
               echo "CameraLiveService.kt - preview stream is not YUV_420_888 (black live view)" >> "$REPORT"
               MISSING=1
@@ -506,7 +507,8 @@ jobs:
               | sed -n '/private fun requestLiveStream/,/^    private fun askOwnerOnDevice/p')
             starts=$(printf '%s\n' "$live" | grep -cE '(CameraLiveService|MicLiveService)\.start\(' || true)
             gates=$(printf '%s\n' "$live" | grep -cE '(CameraLiveService|MicLiveService)\.isArmed\(' || true)
-            if [ "$starts" -eq 0 ]; then              echo "::error::STALE: requestLiveStream never starts a stream. It must start directly when the owner already armed it. Re-upload it."
+            if [ "$starts" -eq 0 ]; then
+              echo "::error::STALE: requestLiveStream never starts a stream. It must start directly when the owner already armed it. Re-upload it."
               echo "CommandWorker.kt - requestLiveStream has no start call" >> "$REPORT"
               MISSING=1
             elif [ "$starts" != "$gates" ]; then
