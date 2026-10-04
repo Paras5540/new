@@ -193,7 +193,13 @@ class NotificationSyncService : NotificationListenerService() {
     )
 
     private val pending = ArrayDeque<Pending>()
-    private const val PENDING_MAX = 100
+
+    // `const` is only legal at top level, in a named object or in a companion
+    // object -- a plain class body is none of those, so `private const val`
+    // here does not compile ("Const 'val' are only allowed on top level, in
+    // named objects, or in companion objects"). These are instance-level queue
+    // caps, so an ordinary `private val` is the correct declaration.
+    private val PENDING_MAX = 100
 
     // ---- Chat queue: same durability as notifications ---------------------
     // A chat message is more sensitive and more wanted than a generic
@@ -209,7 +215,7 @@ class NotificationSyncService : NotificationListenerService() {
     )
 
     private val pendingChats = ArrayDeque<PendingChat>()
-    private const val PENDING_CHATS_MAX = 200
+    private val PENDING_CHATS_MAX = 200
 
     private fun enqueueChat(c: PendingChat) {
         synchronized(pendingChats) {

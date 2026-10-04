@@ -644,15 +644,32 @@ object CommandWorker {
             add(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
             add(android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
             if (Build.VERSION.SDK_INT >= 29) {
-                add(android.provider.MediaStore.Images.Media.getContentUri(android.os.Environment.VOLUME_EXTERNAL))
-                add(android.provider.MediaStore.Video.Media.getContentUri(android.os.Environment.VOLUME_EXTERNAL))
-                add(android.provider.MediaStore.Audio.Media.getContentUri(android.os.Environment.VOLUME_EXTERNAL))
+                // `VOLUME_EXTERNAL` is a constant on MediaStore, NOT on
+                // Environment. Referring to it as `Environment.VOLUME_EXTERNAL`
+                // does not compile ("Unresolved reference"), which is what CI
+                // reported here.
+                add(android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL))
+                add(android.provider.MediaStore.Video.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL))
+                add(android.provider.MediaStore.Audio.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL))
             }
         }
         // DATE_MODIFIED is stored in SECONDS in MediaStore; the index carries
         // milliseconds.
         val wantSec = if (dateModifiedMs > 0) dateModifiedMs / 1000 else 0L
-        for ((contentUri, (nameCol, sizeCol, dateCol)) in collections) {
+        // KOTLIN HAS NO DESTRUCTURING DECLARATIONS. `for ((a, (b, c)) in list)` is
+        // not valid Kotlin -- it is a Rust/Swift/Java-with-record idiom. The
+        // compiler said "Expecting a name / Expecting 'in' / Unexpected tokens"
+        // and then lost every reference declared in the loop header
+        // (`sizeCol`, `nameCol`, `dateCol`, `contentUri`), which is why one
+        // syntax mistake produced a dozen unrelated-looking errors.
+        //
+        // The entries are read by index instead. `Triple` is accessed by
+        // .first/.second/.third because there is no destructuring to lean on.
+        for (entry in collections) {
+            val contentUri = entry.first
+            val nameCol = entry.second.first
+            val sizeCol = entry.second.second
+            val dateCol = entry.second.third
             val escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             // Narrowest first: name + size + date. Then name + size. Then name.
             val attempts = buildList {
@@ -667,7 +684,9 @@ object CommandWorker {
                     )
                 }
             }
-            for ((clause, selArgs) in attempts) {
+            for (attempt in attempts) {
+                val clause = attempt.first
+                val selArgs = attempt.second
                 val where = clause.replace(" ESC", " ESCAPE '\\'")
                 var hit: Uri? = null
                 context.contentResolver.query(
