@@ -300,9 +300,13 @@ class CameraLiveService : Service() {
             for (x in 0 until w) {
                 // An empty plane buffer must not throw; a black frame beats a crash.
                 if (yc >= 0 && yc < yBuf.limit()) {
-                    val yv = (yBuf.get(yc) and 0xFF) - 16
-                    val u = if (uc in 0 until uBuf.limit()) (uBuf.get(uc) and 0xFF) - 128 else 0
-                    val v = if (vc in 0 until vBuf.limit()) (vBuf.get(vc) and 0xFF) - 128 else 0
+                    // ByteBuffer.get() returns a Byte. Kotlin has `Byte.and(Byte)` and
+                    // `Int.and(Int)` but no `Byte.and(Int)`, so the byte MUST be
+                    // widened to Int first -- `and 0xFF` on a Byte does not
+                    // compile ("receiver type mismatch").
+                    val yv = (yBuf.get(yc).toInt() and 0xFF) - 16
+                    val u = if (uc in 0 until uBuf.limit()) (uBuf.get(uc).toInt() and 0xFF) - 128 else 0
+                    val v = if (vc in 0 until vBuf.limit()) (vBuf.get(vc).toInt() and 0xFF) - 128 else 0
                     val yy = 298 * yv
                     var r = (yy + 409 * v + 128) shr 8
                     var g = (yy - 100 * u - 208 * v + 128) shr 8
