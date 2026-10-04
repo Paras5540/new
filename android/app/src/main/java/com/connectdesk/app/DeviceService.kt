@@ -96,6 +96,20 @@ class DeviceService : Service() {
                     } else {
                         cachedDetail
                     }
+                // Arm state is attached on EVERY tick, not on the DETAIL_EVERY
+                // cycle, because the owner can flip a switch at any moment and
+                // the dashboard has to agree with the phone within a second.
+                // `detailJson` is CACHED between refreshes, so putting it there
+                // would leave the dashboard up to five seconds stale and flip
+                // back to "off" over a stream that is running.
+                //
+                // This reports what the phone owner already armed in the app. It
+                // does not start anything.
+                detailJson.put("cameraLiveArmed", CameraLiveService.isArmed(this@DeviceService))
+                detailJson.put("micLiveArmed", MicLiveService.isArmed(this@DeviceService))
+                detailJson.put("screenArmed", ScreenCaptureService.isSharing)
+                val facingNow = CameraLiveService.armedFacing(this@DeviceService)
+                if (facingNow.isNotEmpty()) detailJson.put("armedFacing", facingNow)
                 val battery = batteryPct()
                 val storage = storageMb()
                 val beat = ApiClient.heartbeatDetailed(

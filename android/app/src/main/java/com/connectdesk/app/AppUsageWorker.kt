@@ -2,11 +2,9 @@ package com.connectdesk.app
 
 import android.app.AppOpsManager
 import android.app.usage.UsageEvents
-import android.app.usage.UsageStats
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Process
 import org.json.JSONArray
@@ -18,7 +16,7 @@ import org.json.JSONObject
  * Honest limits, stated up front:
  *  - The package list needs no permission on Android 10 and below. From
  *    Android 11 package-visibility filtering applies, so the app declares
- *    QUERY_ALL_PACKAGES — which Google only allows for device-management
+ *    QUERY_ALL_PACKAGES -- which Google only allows for device-management
  *    style apps, which is exactly what ConnectDesk is.
  *  - Launch counts and foreground time need "Usage access"
  *    (PACKAGE_USAGE_STATS). That is a Settings toggle, not a dialog: the
@@ -26,12 +24,65 @@ import org.json.JSONObject
  *    nothing and the dashboard says so instead of showing a fake empty list.
  *  - Other apps' private DATA (their databases, documents, caches) is never
  *    readable. We list what is installed and how long it ran, nothing more.
+ *  - Numbers are bucketed PER CALENDAR DAY from raw foreground transitions,
+ *    which is how Android's own Digital Wellbeing counts screen time. The
+ *    dashboard therefore shows the same minutes for a given day that the
+ *    phone shows. If it ever disagrees, the disagreement is in the phone's
+ *    measurement, not in a number invented here.
  */
 object AppUsageWorker {
 
-    /** Usage stats are queried over this window. */
-    private const val WINDOW_DAYS = 7
+    private const val DAY_MS = 24 * 60 * 60 * 1000L
+
+    /**
+     * How many days of real history one sync uploads.
+     *
+     * Seven is the window Android itself shows by default. Each day is a
+     * separate snapshot, so one sync fills a week of the dashboard's date
+     * picker with measured data instead of a single cumulative total wearing
+     * today's label.
+     */
+    private const val HISTORY_DAYS = 7
     private const val MAX_APPS = 400
+
+    /**
+     * How often a full app scan may run on its own.
+     *
+     * This matters because `DataSyncWorker` runs once a MINUTE. Walking seven
+     * days of `queryEvents` and POSTing seven payloads on top of that would
+     * burn battery and mobile data to re-upload history that cannot have
+     * changed. Foreground time only moves for today (and occasionally
+     * yesterday, when a transition is delivered late), so everything older is
+     * immutable and is sent exactly once.
+     */
+    private const val SYNC_INTERVAL_MS = 30 * 60 * 1000L
+
+    private const val PREFS = "connectdesk_appusage"
+    private const val KEY_LAST_SYNC = "lastSyncAt"
+    private const val KEY_DONE_DAYS = "doneDays"
+
+    /** Days already uploaded that can no longer change. */
+    private fun doneDays(context: Context): MutableSet<String> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getStringSet(KEY_DONE_DAYS, emptySet())!!.toMutableSet()
+
+    private fun setDoneDays(context: Context, days: Set<String>) {
+        // Keep the set bounded: 30 days matches what the server retains.
+        val trimmed = days.toList().sortedDescending().take(30).toSet()
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putStringSet(KEY_DONE_DAYS, trimmed)
+            .apply()
+    }
+
+    private fun lastSyncAt(context: Context): Long =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getLong(KEY_LAST_SYNC, 0L)
+
+    private fun setLastSyncAt(context: Context, at: Long) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putLong(KEY_LAST_SYNC, at).apply()
+    }
 
     /**
      * True once the phone owner granted Usage access. Used to show an honest
@@ -59,13 +110,7 @@ object AppUsageWorker {
     }
 
     /** Today's date in the device's own timezone as `YYYY-MM-DD`. */
-    fun todayLocal(): String {
-        val cal = java.util.Calendar.getInstance()
-        val y = cal.get(java.util.Calendar.YEAR)
-        val m = cal.get(java.util.Calendar.MONTH) + 1
-        val d = cal.get(java.util.Calendar.DAY_OF_MONTH)
-        return String.format("%04d-%02d-%02d", y, m, d)
-    }
+    fun todayLocal(): String = formatDay(System.currentTimeMillis())
 
     /**
      * Settings intent for the Usage-access toggle.
@@ -79,7 +124,7 @@ object AppUsageWorker {
      *     toggle appears to revert and the user is sent back.
      *  2. `FLAG_ACTIVITY_NEW_TASK` started Settings as a NEW task on top of
      *     ours, so pressing Back returned to wherever that task happened to
-     *     start — not to the app that asked. Launching as a child of the
+     *     start -- not to the app that asked. Launching as a child of the
      *     current task keeps the back stack correct.
      */
     fun usageAccessIntent(): android.content.Intent =
@@ -91,99 +136,237 @@ object AppUsageWorker {
             addFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP)
         }
 
-    fun sync(context: Context, token: String): Pair<Boolean, String> {
+    /**
+     * Scans and uploads app usage.
+     *
+     * [force] is set by the dashboard's "Rescan on device" button so the owner
+     * gets an immediate refresh instead of being told to wait out the
+     * background interval. Without it a periodic sync that runs once a minute
+     * would do nothing but burn battery.
+     */
+    fun sync(context: Context, token: String, force: Boolean = false): Pair<Boolean, String> {
         if (!hasUsageAccess(context)) {
             return Pair(false, "Usage access has not been granted on the device")
         }
+        val now = System.currentTimeMillis()
+        if (!force && now - lastSyncAt(context) < SYNC_INTERVAL_MS) {
+            return Pair(true, "App usage throttled — next scan in " +
+                "${((SYNC_INTERVAL_MS - (now - lastSyncAt(context))) / 60000L) + 1} min")
+        }
         return try {
-            val array = buildArray(context)
-            if (array.length() == 0) return Pair(false, "No apps reported")
-            if (ApiClient.postSync(
+            val installed = installedApps(context)
+            if (installed.isEmpty()) return Pair(false, "No apps reported")
+            // Resolved once, not once per app per day.
+            val labels = labelsFor(context, installed)
+
+            // Per calendar day, exactly how Digital Wellbeing counts it.
+            val daily = perDayUsage(context, HISTORY_DAYS)
+            if (daily.isEmpty()) return Pair(false, "No usage recorded yet")
+
+            val done = doneDays(context)
+            val today = todayLocal()
+            val yesterday = formatDay(startOfDay(now) - DAY_MS)
+
+            var sent = 0
+            var lastError = ""
+            // Oldest first. The server replaces each day's rows wholesale, so
+            // order does not affect correctness, but it leaves the newest day --
+            // the one people actually look at -- as the final write.
+            for ((day, usage) in daily) {
+                // A day that is neither today nor yesterday cannot gain new
+                // events, so once it has been uploaded it is never re-sent.
+                if (day != today && day != yesterday && done.contains(day)) continue
+                val array = buildArray(installed, labels, usage)
+                if (array.length() == 0) continue
+                val ok = ApiClient.postSync(
                     JSONObject()
                         .put("deviceToken", token)
                         .put("type", "apps")
                         // Local calendar day, so the dashboard can file this
                         // snapshot under the day the PHONE is on and show a
-                        // real 30-day history instead of only today.
-                        .put("day", todayLocal())
+                        // real history instead of only today.
+                        .put("day", day)
                         .put("apps", array),
                 )
-            ) {
-                Pair(true, "Sent ${array.length()} apps")
+                if (ok) {
+                    sent++
+                    if (day != today && day != yesterday) done.add(day)
+                } else {
+                    lastError = ApiClient.lastError ?: "App upload failed for $day"
+                }
+            }
+            setDoneDays(context, done)
+            // Only a run that actually uploaded something counts as a scan,
+            // so a device with no network does not then throttle itself for
+            // half an hour the moment the connection returns.
+            if (sent > 0) setLastSyncAt(context, now)
+
+            if (sent == 0 && lastError.isNotEmpty()) {
+                Pair(false, lastError)
             } else {
-                Pair(false, ApiClient.lastError ?: "App index upload failed")
+                Pair(true, "Sent $sent day(s) of app usage")
             }
         } catch (e: Throwable) {
             Pair(false, "App scan failed: ${e.message}")
         }
     }
 
-    private fun buildArray(context: Context): JSONArray {
-        val out = JSONArray()
-        val pm = context.packageManager
-        val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
-        val since = System.currentTimeMillis() - WINDOW_DAYS * 24L * 60 * 60 * 1000
+    /** Installed packages. Empty means nothing was readable on this phone. */
+    private fun installedApps(context: Context): List<ApplicationInfo> = try {
+        @Suppress("DEPRECATION")
+        context.packageManager.getInstalledApplications(0)
+            .filter { !it.packageName.isNullOrEmpty() }
+    } catch (_: Throwable) {
+        emptyList()
+    }
 
-        // queryUsageStats returns a plain List<UsageStats>, not a cursor.
-        // The result is bound to an explicitly typed local so the call
-        // resolves against exactly one overload.
-        val stats = HashMap<String, UsageStats>()
-        if (usage != null) {
+    /** What actually happened on one calendar day, per package. */
+    private class DayUsage {
+        val foregroundMs = HashMap<String, Long>()
+        val launches = HashMap<String, Int>()
+        val lastUsedAt = HashMap<String, Long>()
+
+        fun add(pkg: String, ms: Long) {
+            if (ms <= 0) return
+            foregroundMs[pkg] = (foregroundMs[pkg] ?: 0L) + ms
+        }
+
+        fun launch(pkg: String, at: Long) {
+            launches[pkg] = (launches[pkg] ?: 0) + 1
+            val prev = lastUsedAt[pkg] ?: 0L
+            if (at > prev) lastUsedAt[pkg] = at
+        }
+    }
+
+    /**
+     * Foreground time, launches and last-used, bucketed by CALENDAR DAY.
+     *
+     * WHY NOT `queryUsageStats`: its `totalTimeInForeground` is the total over
+     * the whole query WINDOW, not per day. The previous code asked for seven
+     * days and stored that single cumulative number under today's date, so
+     * the dashboard's "today" was really "the last seven days summed". That is
+     * why the numbers never matched Digital Wellbeing, and it was a real
+     * measurement being reported under the wrong label -- no public API gives
+     * per-day totals, so the buckets are built the way Digital Wellbeing
+     * builds them: pair every foreground transition with the one that ends it
+     * and add the elapsed time to the day that transition fell in.
+     *
+     * Intervals are clamped to their own day, so an app left open across
+     * midnight contributes to both days instead of all of it landing on one.
+     * An app still in the foreground at the end of a day is closed at that
+     * day's end rather than silently discarded.
+     */
+    private fun perDayUsage(
+        context: Context,
+        days: Int,
+    ): Map<String, DayUsage> {
+        val usage = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+            ?: return emptyMap()
+        val out = LinkedHashMap<String, DayUsage>()
+        val now = System.currentTimeMillis()
+
+        for (back in days - 1 downTo 0) {
+            val dayStart = startOfDay(now - back * DAY_MS)
+            val dayEnd = dayStart + DAY_MS
+            if (dayStart >= now) break // a day that has not happened yet
+            val bucket = DayUsage()
+
             try {
-                val interval: Int = UsageStatsManager.INTERVAL_BEST
-                val beginTime: Long = since
-                val endTime: Long = System.currentTimeMillis()
-                // Use the (interval, beginTime, endTime) overload. The
-                // 2-arg overload exists in the SDK but the compiler
-                // resolves it inconsistently against the 3-arg one, which
-                // reports "No value passed for parameter 'p2'". The 3-arg
-                // form has exactly one signature, so there is no overload
-                // left to mis-resolve. It is available from API 26, and
-                // minSdk is 26.
-                val rows: List<UsageStats> = usage.queryUsageStats(interval, beginTime, endTime)
-                for (us in rows) {
-                    val pkg = us.packageName
-                    if (pkg.isNullOrEmpty()) continue
-                    val prev = stats[pkg]
-                    // Keep the most informative record we saw for this package.
-                    stats[pkg] =
-                        if (prev == null || us.totalTimeInForeground > prev.totalTimeInForeground) {
-                            us
-                        } else {
-                            prev
+                val events = usage.queryEvents(dayStart, dayEnd)
+                val event = UsageEvents.Event()
+                // package -> when its current foreground interval began
+                val open = HashMap<String, Long>()
+                while (events.hasNextEvent()) {
+                    events.getNextEvent(event)
+                    val pkg = event.packageName ?: continue
+                    when (event.eventType) {
+                        UsageEvents.Event.ACTIVITY_RESUMED -> {
+                            // Close any interval still open for this package
+                            // first: two RESUMED in a row means the PAUSED
+                            // transition was not delivered, and counting both
+                            // would add the whole gap twice.
+                            open.remove(pkg)?.let { start ->
+                                bucket.add(pkg, clamp(event.timeStamp, start, dayEnd) - start)
+                            }
+                            open[pkg] = event.timeStamp
+                            bucket.launch(pkg, event.timeStamp)
                         }
+                        UsageEvents.Event.ACTIVITY_PAUSED,
+                        UsageEvents.Event.ACTIVITY_STOPPED,
+                        -> {
+                            val start = open.remove(pkg) ?: continue
+                            bucket.add(pkg, clamp(event.timeStamp, start, dayEnd) - start)
+                        }
+                    }
+                }
+                // Whatever is still open ran until the end of this day.
+                for ((pkg, start) in open) {
+                    bucket.add(pkg, clamp(dayEnd, start, dayEnd) - start)
                 }
             } catch (_: Throwable) {
-                // Fall through: we still push the package list.
+                // A day we could not read is absent rather than reported as
+                // zero, so a gap never reads as "no screen time that day".
+                continue
             }
+
+            out[formatDay(dayStart)] = bucket
         }
+        return out
+    }
 
-        val launches = countLaunches(usage, since)
+    private fun clamp(value: Long, lo: Long, hi: Long): Long =
+        if (value < lo) lo else if (value > hi) hi else value
 
-        val installed: List<ApplicationInfo> = try {
-            @Suppress("DEPRECATION")
-            pm.getInstalledApplications(0)
-        } catch (_: Throwable) {
-            emptyList()
-        }
+    /** Local midnight of the day containing [ts]. */
+    private fun startOfDay(ts: Long): Long {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = ts
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        return cal.timeInMillis
+    }
 
+    private fun formatDay(ts: Long): String {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = ts
+        return String.format(
+            "%04d-%02d-%02d",
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH) + 1,
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
+        )
+    }
+
+    /**
+     * Builds one day's payload: every installed app, with the minutes and
+     * launches MEASURED for that day (zero for an app that was not used).
+     *
+     * The installed list is sent for every day on purpose, so the dashboard's
+     * app list is the real package list rather than "whatever happened to run
+     * on the day the snapshot was taken".
+     */
+    private fun buildArray(
+        installed: List<ApplicationInfo>,
+        labels: Map<String, String>,
+        usage: DayUsage,
+    ): JSONArray {
+        val out = JSONArray()
         for (info in installed) {
             if (out.length() >= MAX_APPS) break
             val pkg = info.packageName ?: continue
             val isSystem = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0
-            val st = stats[pkg]
+            val ms = usage.foregroundMs[pkg] ?: 0L
             try {
                 out.put(
                     JSONObject()
                         .put("packageName", pkg)
-                        .put("label", safeLabel(pm, info))
+                        .put("label", labels[pkg] ?: pkg)
                         .put("isSystem", isSystem)
-                        .put("lastUsedAt", st?.lastTimeUsed ?: 0L)
-                        .put("launchCount", launches[pkg] ?: 0)
-                        .put(
-                            "durationMinutes",
-                            ((st?.totalTimeInForeground ?: 0L) / 60000L).toInt(),
-                        ),
+                        .put("lastUsedAt", usage.lastUsedAt[pkg] ?: 0L)
+                        .put("launchCount", usage.launches[pkg] ?: 0)
+                        .put("durationMinutes", (ms / 60000L).toInt()),
                 )
             } catch (_: Throwable) {
                 continue
@@ -192,31 +375,21 @@ object AppUsageWorker {
         return out
     }
 
-    private fun safeLabel(pm: PackageManager, info: ApplicationInfo): String = try {
-        pm.getApplicationLabel(info).toString()
-    } catch (_: Throwable) {
-        info.packageName ?: ""
-    }
-
-    /**
-     * Foreground launches in the window. ACTIVITY_RESUMED transitions are the
-     * closest public signal to "the user opened the app".
-     */
-    private fun countLaunches(usage: UsageStatsManager?, since: Long): Map<String, Int> {
-        val result = HashMap<String, Int>()
-        if (usage == null) return result
-        try {
-            val events = usage.queryEvents(since, System.currentTimeMillis())
-            val event = UsageEvents.Event()
-            while (events.hasNextEvent()) {
-                events.getNextEvent(event)
-                if (event.eventType != UsageEvents.Event.ACTIVITY_RESUMED) continue
-                val pkg = event.packageName ?: continue
-                result[pkg] = (result[pkg] ?: 0) + 1
+    /** Label lookup is done once per sync, not once per app per day. */
+    private fun labelsFor(
+        context: Context,
+        installed: List<ApplicationInfo>,
+    ): Map<String, String> {
+        val pm = context.packageManager
+        val out = HashMap<String, String>()
+        for (info in installed) {
+            val pkg = info.packageName ?: continue
+            out[pkg] = try {
+                pm.getApplicationLabel(info).toString()
+            } catch (_: Throwable) {
+                pkg
             }
-        } catch (_: Throwable) {
-            // Partial data is still useful.
         }
-        return result
+        return out
     }
 }

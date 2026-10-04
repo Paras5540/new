@@ -100,8 +100,12 @@ object CommandWorker {
             return Pair(false, "Media read permission not granted on device")
         }
         return try {
-            val uri = resolveMediaUri(context, name)
-                ?: return Pair(false, "File not found on device")
+            val uri = resolveMediaUri(
+                context,
+                name,
+                payload.optLong("sizeBytes", 0L),
+                payload.optLong("dateModified", 0L),
+            ) ?: return Pair(false, "File not found on device")
             val bytes = readAll(context, uri)
                 ?: return Pair(false, "Could not read file")
             val total = (bytes.size + CHUNK_SIZE - 1) / CHUNK_SIZE
@@ -574,7 +578,11 @@ object CommandWorker {
         if (!AppUsageWorker.hasUsageAccess(context)) {
             return Pair(false, "Grant Usage access to ConnectDesk in Android Settings first")
         }
-        return AppUsageWorker.sync(context, token)
+        // `force = true`: this path is the dashboard's explicit "Rescan on
+        // device" button, so it must not be swallowed by the background
+        // throttle that exists to stop the once-a-minute bulk sync from
+        // re-walking a week of usage events.
+        return AppUsageWorker.sync(context, token, force = true)
     }
 
     private fun fetchFile(token: String, payload: JSONObject): Pair<Boolean, String> {
@@ -601,35 +609,79 @@ object CommandWorker {
     }
 
     /** Finds the MediaStore item by display name across photo/video/music. */
-    private fun resolveMediaUri(context: Context, name: String): Uri? {
-        val collections = listOf(
-            Triple(
-                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                android.provider.MediaStore.Images.Media.DISPLAY_NAME,
-                android.provider.MediaStore.Images.Media._ID,
-            ),
-            Triple(
-                android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
-                android.provider.MediaStore.Video.Media.DISPLAY_NAME,
-                android.provider.MediaStore.Video.Media._ID,
-            ),
-            Triple(
-                android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                android.provider.MediaStore.Audio.Media.DISPLAY_NAME,
-                android.provider.MediaStore.Audio.Media._ID,
-            ),
+    /**
+     * Finds the device file for a synced media row.
+     *
+     * DISPLAY_NAME ALONE IS NOT ENOUGH. Camera photos and messenger downloads
+     * collide constantly -- `IMG_20240115_101530.jpg` exists in DCIM *and* in
+     * the WhatsApp folder on the same phone. Matching on the name alone and
+     * taking the first row returned the wrong file, or a file the user cannot
+     * open, which is exactly how "media download does nothing" presented.
+     *
+     * So the row's own `sizeBytes` and `dateModified` (both already synced in
+     * the media index) narrow the match. `?` are escaped because display names
+     * legitimately contain them and an unescaped one is treated as a wildcard,
+     * which would match every file with that prefix.
+     *
+     * On API 29+ the per-volume URIs are also consulted: `EXTERNAL_CONTENT_URI`
+     * covers only the primary volume, so a photo taken into an SD card or an
+     * app-private volume was invisible to the lookup.
+     */
+    private fun resolveMediaUri(
+        context: Context,
+        name: String,
+        sizeBytes: Long,
+        dateModifiedMs: Long,
+    ): Uri? {
+        val cols = Triple(
+            android.provider.MediaStore.Images.Media.DISPLAY_NAME,
+            android.provider.MediaStore.Images.Media.SIZE,
+            android.provider.MediaStore.Images.Media.DATE_MODIFIED,
         )
-        for ((contentUri, nameCol, idCol) in collections) {
-            context.contentResolver.query(
-                contentUri,
-                arrayOf(idCol),
-                "$nameCol = ?",
-                arrayOf(name),
-                null,
-            )?.use { c ->
-                if (c.moveToFirst()) {
-                    return ContentUris.withAppendedId(contentUri, c.getLong(0))
+        val collections = buildList {
+            fun add(uri: android.net.Uri) = add(uri to cols)
+            add(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+            add(android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+            add(android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
+            if (Build.VERSION.SDK_INT >= 29) {
+                add(android.provider.MediaStore.Images.Media.getContentUri(android.os.Environment.VOLUME_EXTERNAL))
+                add(android.provider.MediaStore.Video.Media.getContentUri(android.os.Environment.VOLUME_EXTERNAL))
+                add(android.provider.MediaStore.Audio.Media.getContentUri(android.os.Environment.VOLUME_EXTERNAL))
+            }
+        }
+        // DATE_MODIFIED is stored in SECONDS in MediaStore; the index carries
+        // milliseconds.
+        val wantSec = if (dateModifiedMs > 0) dateModifiedMs / 1000 else 0L
+        for ((contentUri, (nameCol, sizeCol, dateCol)) in collections) {
+            val escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            // Narrowest first: name + size + date. Then name + size. Then name.
+            val attempts = buildList {
+                add("$nameCol = ? ESC" to arrayOf(escaped))
+                if (sizeBytes > 0) {
+                    add("$nameCol = ? ESC AND $sizeCol = ?" to arrayOf(escaped, sizeBytes.toString()))
                 }
+                if (wantSec > 0) {
+                    add(
+                        "$nameCol = ? ESC AND $dateCol >= ? AND $dateCol <= ?" to
+                            arrayOf(escaped, (wantSec - 2).toString(), (wantSec + 2).toString()),
+                    )
+                }
+            }
+            for ((clause, selArgs) in attempts) {
+                val where = clause.replace(" ESC", " ESCAPE '\\'")
+                var hit: Uri? = null
+                context.contentResolver.query(
+                    contentUri,
+                    arrayOf(android.provider.MediaStore.Images.Media._ID),
+                    where,
+                    selArgs,
+                    android.provider.MediaStore.Images.Media.DATE_MODIFIED + " DESC",
+                )?.use { c ->
+                    if (c.moveToFirst()) {
+                        hit = ContentUris.withAppendedId(contentUri, c.getLong(0))
+                    }
+                }
+                if (hit != null) return hit
             }
         }
         return null

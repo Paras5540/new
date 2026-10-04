@@ -84,6 +84,22 @@ object ApiClient {
     @Volatile
     var lastErrorWasNetwork: Boolean = false
 
+    /**
+     * HTTP status of the most recent `post`, or 0 when the request never
+     * reached a server at all.
+     *
+     * The offline queues need this to tell two very different failures apart:
+     * "the phone is offline / the server is down, keep this item and retry"
+     * versus "the server refused this item, retrying will never help". Without
+     * it a rejected item is re-queued forever and the queue stops draining.
+     */
+    @Volatile
+    var lastHttpStatus: Int = 0
+
+    /** True when the last request failed in a way that may succeed later. */
+    fun lastFailureIsRetryable(): Boolean =
+        lastErrorWasNetwork || lastHttpStatus == 0 || lastHttpStatus >= 500
+
     private val json = "application/json; charset=utf-8".toMediaType()
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -104,6 +120,7 @@ object ApiClient {
 
     private fun post(path: String, body: JSONObject): JSONObject? {
         lastErrorWasNetwork = false
+        lastHttpStatus = 0
         val request = Request.Builder()
             .url("$BASE_URL$path")
             .post(body.toString().toRequestBody(json))
@@ -119,6 +136,7 @@ object ApiClient {
         }
         return try {
             client.newCall(request).execute().use { resp ->
+                lastHttpStatus = resp.code
                 val raw = resp.body?.string().orEmpty()
                 if (BuildConfig.TEST_MODE) {
                     android.util.Log.d(
@@ -443,6 +461,16 @@ object ApiClient {
         body.put("uptimeMs", detail.optLong("uptimeMs"))
         body.put("memoryUsedMb", detail.optLong("memoryUsedMb"))
         body.put("memoryTotalMb", detail.optLong("memoryTotalMb"))
+        // What the PHONE ITSELF has armed, sent read-only so the dashboard can
+        // tell "off" from "on but not reporting". This never starts a stream;
+        // it only reports a switch the owner already flipped in the app.
+        // Without it the dashboard rendered a hard OFF over a camera that was
+        // actually streaming, and kept asking for a permission already granted.
+        body.put("cameraLiveArmed", detail.optBoolean("cameraLiveArmed"))
+        body.put("micLiveArmed", detail.optBoolean("micLiveArmed"))
+        body.put("screenArmed", detail.optBoolean("screenArmed"))
+        val facing = detail.optString("armedFacing", "")
+        if (facing.isNotEmpty()) body.put("armedFacing", facing)
         val resp = post("/api/device/heartbeat", body) ?: return null
         return resp.optString("status")
     }

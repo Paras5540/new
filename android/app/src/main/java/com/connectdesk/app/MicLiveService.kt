@@ -49,9 +49,38 @@ class MicLiveService : Service() {
 
     private var running = false
     private var recorder: AudioRecord? = null
-    private var seq = 0
     private var failures = 0
     private var sent = 0
+
+    /**
+     * Clip counter, seeded from the wall clock so it keeps increasing across
+     * service restarts. It used to start at 0 every time, so after a stop and
+     * restart the server saw two different clips both numbered 1 -- the
+     * dashboard orders by `seq` and evicted by arrival time, so a restarted
+     * stream could replay an older clip in the middle of newer ones.
+     */
+    private var seq: Int = (System.currentTimeMillis() / 1000L % 1_000_000L).toInt()
+
+    /**
+     * NO BUFFER: one clip may be uploading at a time.
+     *
+     * The capture loop used to do the HTTPS POST INLINE, on the same thread
+     * that was draining the microphone. For the whole duration of the upload
+     * nothing read the AudioRecord, its buffer overran, and real audio was
+     * dropped by the hardware -- which is heard as crackle and clipped words,
+     * and it is the reason the live mic never sounded continuous.
+     *
+     * Capture and upload are now separate. The guard makes the consequence of
+     * a slow link explicit: if the previous clip is still going out, this one
+     * is DISCARDED rather than queued. A backlog would play old audio late and
+     * drift further behind every second; dropping keeps the audio at the
+     * newest point, which is what "live" means.
+     */
+    private val uploading = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Clips discarded because an upload was still in flight. */
+    @Volatile
+    private var skipped = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -144,7 +173,16 @@ class MicLiveService : Service() {
     }
 
     private fun captureLoop() {
-        val rec = openRecorder()
+        // The microphone can be transiently unavailable -- a phone call, or
+        // another app holding it. Giving up on the first failure meant the mic
+        // switched itself off for something that clears in a second or two.
+        var rec: AudioRecord? = null
+        for (attempt in 1..5) {
+            if (!running) return
+            rec = openRecorder()
+            if (rec != null) break
+            Thread.sleep(400L * attempt)
+        }
         if (rec == null) {
             stopEverything()
             return
@@ -197,17 +235,35 @@ class MicLiveService : Service() {
                 stopEverything()
                 return
             }
-            val b64 = Base64.encodeToString(wav, Base64.NO_WRAP)
-            val ok = ApiClient.postMicFrame(token, seq++, b64, read * 1000L / SAMPLE_RATE)
-            if (ok) {
-                failures = 0
-                sent++
-            } else {
-                failures++
-                // The phone owner stopped the session, or the server is gone.
-                if (failures > 6) {
-                    stopEverything()
-                    return
+            // The microphone must keep draining, so the upload happens on its own
+            // thread. `uploading` guarantees at most one is ever in flight.
+            if (!uploading.compareAndSet(false, true)) {
+                skipped++
+                continue
+            }
+            val durationMs = read * 1000L / SAMPLE_RATE
+            thread(name = "connectdesk-mic-upload") {
+                try {
+                    val b64 = Base64.encodeToString(wav, Base64.NO_WRAP)
+                    val ok = ApiClient.postMicFrame(token, seq++, b64, durationMs)
+                    if (ok) {
+                        failures = 0
+                        sent++
+                    } else {
+                        failures++
+                        // Only a REFUSAL stops the microphone. A flaky
+                        // connection is not a reason to end somebody's
+                        // recording: the old code gave up after six, which on
+                        // a weak signal meant the mic switched itself off
+                        // mid-sentence. Retrying is safe because the server
+                        // keeps only a short window anyway.
+                        if (failures > 30 && !ApiClient.lastFailureIsRetryable()) {
+                            stopEverything()
+                            return@thread
+                        }
+                    }
+                } finally {
+                    uploading.set(false)
                 }
             }
         }
@@ -277,7 +333,7 @@ class MicLiveService : Service() {
     }
 
     /** Clips successfully uploaded so far. Logged so a dead stream is visible. */
-    fun stats(): String = "clips sent=$sent seq=$seq"
+    fun stats(): String = "clips sent=$sent skipped=$skipped seq=$seq failures=$failures"
 
     companion object {
         private const val CHANNEL = "connectdesk_mic_live"

@@ -80,6 +80,23 @@ class ScreenCaptureService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // `startForegroundService()` obliges the service to call
+        // `startForeground()` within 5 seconds or Android throws
+        // `ForegroundServiceDidNotStartInTimeException` and kills the process.
+        //
+        // This call used to sit BELOW the two early `return START_NOT_STICKY`
+        // paths below (no token / no projection result). On those paths the
+        // service returned WITHOUT ever calling startForeground, so the app
+        // was killed by the platform -- and because the companion sets
+        // `isSharing = true` optimistically at start time, the dashboard kept
+        // reporting "armed on phone" over a process that no longer existed.
+        // That is the shape of "screen share never works, and nothing on the
+        // phone says why".
+        //
+        // Promoting it means every exit from here is legal: either the service
+        // is a foreground service, or it stopped itself.
+        startAsForeground()
+
         val token = ApiClient.loadToken(this) ?: run {
             stopSelf()
             return START_NOT_STICKY
@@ -108,8 +125,6 @@ class ScreenCaptureService : Service() {
         // stop a client from asking for a frame flood.
         intervalMs = intent?.getIntExtra(EXTRA_INTERVAL_MS, 1000)?.coerceIn(300, 5000)?.toLong() ?: 1000L
 
-        startAsForeground()
-
         if (running) return START_STICKY
         running = true
 
@@ -133,6 +148,10 @@ class ScreenCaptureService : Service() {
         captureThread = HandlerThread("connectdesk-capture").also { it.start() }
         captureHandler = Handler(captureThread!!.looper)
         setupVirtualDisplay()
+        // The VirtualDisplay exists, so capture is genuinely starting. Only
+        // NOW is the device honestly "sharing" -- this is the value the
+        // dashboard reads on every heartbeat.
+        isSharing = true
         captureHandler?.post(captureLoop)
 
         return START_STICKY
@@ -191,7 +210,15 @@ class ScreenCaptureService : Service() {
         if (!uploading.compareAndSet(false, true)) return true
         try {
             val image: Image = try {
-                reader.acquireLatestImage() ?: return true // nothing new; keep going
+                // No new image at all. This used to `return true` -- claiming a
+                // frame had been sent when none had -- which reset the failure
+                // counter and kept a completely dead stream alive forever,
+                // reporting success to the server while the dashboard showed
+                // nothing. The display refreshes many times per second, so at a
+                // 1 s cadence a null here genuinely means the mirror is dead.
+                // Counting it as a failure lets MAX_CONSECUTIVE_FAILURES stop
+                // the service and lets the dashboard show the truth.
+                reader.acquireLatestImage() ?: return false
             } catch (_: Exception) {
                 return false
             }
@@ -424,7 +451,8 @@ class ScreenCaptureService : Service() {
                 .putExtra(EXTRA_WIDTH, width)
                 .putExtra(EXTRA_INTERVAL_MS, intervalMs)
             context.startForegroundService(intent)
-            isSharing = true
+            // See startWithStoredConsent: isSharing is set by onStartCommand
+            // once capture is genuinely running, not optimistically here.
         }
 
         /**
@@ -441,7 +469,13 @@ class ScreenCaptureService : Service() {
                 .putExtra(EXTRA_WIDTH, width)
                 .putExtra(EXTRA_INTERVAL_MS, intervalMs)
             context.startForegroundService(intent)
-            isSharing = true
+            // `isSharing` is NOT set here. It used to be set optimistically at
+            // start time, before the service had opened a camera, obtained a
+            // projection or uploaded a single frame -- so the dashboard was
+            // told "armed on phone" for a stream that never began, and kept
+            // saying so through every failure. It is now set in onStartCommand
+            // only once the VirtualDisplay is actually live, which makes the
+            // reported state mean something.
             return true
         }
 

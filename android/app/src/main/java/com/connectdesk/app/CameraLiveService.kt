@@ -73,6 +73,58 @@ class CameraLiveService : Service() {
     }
 
     /**
+     * NO BUFFER, enforced structurally.
+     *
+     * The camera produces ~30 frames a second; the radio drains well under
+     * one. Handing every frame to the single-threaded executor built a queue
+     * that grew without bound -- hundreds of `Image` objects holding camera
+     * buffers -- so the server eventually got frames that were tens of seconds
+     * old and the dashboard rendered a picture that never moved. That is the
+     * "live camera lag/buffer" symptom, and rate-limiting the upload did not
+     * fix it: the rate limit ran ON the worker thread, long after the image
+     * had already been queued.
+     *
+     * So the check moved to the reader callback on the main looper: if a frame
+     * is still in flight, or the adaptive gap has not elapsed, the frame is
+     * closed and dropped immediately. At most ONE image is ever inside the
+     * pipeline, so the frame the dashboard shows is always the newest one that
+     * can actually be sent.
+     */
+    private val inFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Adaptive quality.
+     *
+     * A fixed 1280px/q70 JPEG is a ~150 KB upload every second. On a weak
+     * connection that single upload takes longer than the interval, the stream
+     * falls behind by design, and the user sees a frozen or black box. So the
+     * phone measures how long its own uploads actually take and picks one of
+     * three tiers: sharp and frequent on a good link, small and infrequent on a
+     * bad one, back to sharp by itself as soon as the link recovers.
+     */
+    private enum class Tier(val quality: Int, val scale: Int, val gapMs: Long) {
+        HIGH(82, 1, 700L),
+        MEDIUM(62, 2, 1_500L),
+        LOW(40, 4, 3_000L),
+    }
+
+    @Volatile
+    private var tier: Tier = Tier.HIGH
+
+    /** Smoothed upload round-trip, so one bad frame cannot swing the quality. */
+    @Volatile
+    private var emaRtt: Long = 0
+
+    /**
+     * Bumped every time the camera is released. A `CameraDevice.StateCallback`
+     * from the PREVIOUS lens can still fire after a front/back switch, and
+     * without this it would install the old device back into `camera` and close
+     * the new one -- which is why switching lenses used to end the stream.
+     */
+    @Volatile
+    private var generation = 0
+
+    /**
      * Minimum gap between two camera frames.
      *
      * The camera produces frames continuously (typically 30/s), and each one is
@@ -84,9 +136,21 @@ class CameraLiveService : Service() {
      * away anyway. One frame a second is therefore both the fastest useful rate
      * and the only one that cannot fall behind.
      */
-    private val MIN_FRAME_GAP_MS = 1_000L
+    /**
+     * Minimum gap between two camera frames. Now TIER-DEPENDENT: a fixed
+     * one-second value could not be satisfied at all on a slow link, so the
+     * stream was permanently behind instead of merely chunky. The slow tier
+     * deliberately sends fewer, smaller frames -- a choppy but HONEST picture
+     * beats a sharp one that arrives ten seconds late.
+     */
+    private val minGapMs: Long
+        get() = tier.gapMs
 
-    /** Wall-clock of the last upload, used to enforce [MIN_FRAME_GAP_MS]. */
+    /**
+     * Wall-clock of the last upload START. Measured start-to-start, so a slow
+     * upload lengthens the gap on its own instead of letting frames pile up
+     * behind it.
+     */
     @Volatile
     private var lastUploadAt = 0L
 
@@ -103,8 +167,31 @@ class CameraLiveService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                facing = intent?.getStringExtra(EXTRA_FACING) ?: "back"
+                val want = intent?.getStringExtra(EXTRA_FACING) ?: facing
+                // Idempotent: asking for the lens that is already streaming
+                // must not tear the camera down and rebuild it.
+                if (camera != null && session != null && want == facing) {
+                    return START_NOT_STICKY
+                }
+                facing = want
+                // Persist before opening, so a heartbeat that lands during the
+                // switch already reports the new lens.
+                setArmedFacing(this, facing)
                 startForegroundWithIndicator()
+                // THE FRONT/BACK FIX. The camera is released BEFORE the new one
+                // is opened. Almost no phone lets one app hold two cameras at
+                // once, so `openCamera` used to be called while the previous
+                // device was still open; that threw CameraAccessException,
+                // which fell into `catch (e: Throwable) { stopEverything() }` and
+                // killed the whole stream. Switching back->front therefore
+                // turned the camera OFF instead of switching it. The upload
+                // worker and the foreground notification are deliberately NOT
+                // torn down here -- `stopEverything()` would shut the executor
+                // down and the restarted stream could never encode a frame.
+                releaseCameraOnly()
+                emaRtt = 0
+                failures = 0
+                tier = Tier.HIGH
                 openCamera()
             }
         }
@@ -273,11 +360,32 @@ class CameraLiveService : Service() {
                 // The reader is being torn down. Nothing to drain.
                 return@setOnImageAvailableListener
             } ?: return@setOnImageAvailableListener
+            // NO BUFFER, enforced here on the main looper -- BEFORE the frame is
+            // handed to the executor. At most one image is ever in the pipeline,
+            // so the frame the dashboard shows is always the newest one that
+            // could actually be sent. See the `inFlight` field for why the old
+            // placement of this check could not prevent a backlog.
+            val now = System.currentTimeMillis()
+            if (now - lastUploadAt < minGapMs || !inFlight.compareAndSet(false, true)) {
+                skipped++
+                try {
+                    img.close()
+                } catch (_: Throwable) {
+                }
+                return@setOnImageAvailableListener
+            }
             try {
-                uploadExecutor.execute { upload(img) }
+                uploadExecutor.execute {
+                    try {
+                        upload(img)
+                    } finally {
+                        inFlight.set(false)
+                    }
+                }
             } catch (_: Throwable) {
                 // Executor already shut down (stopEverything ran). Close here,
                 // since `upload` — which owns closing — never got the image.
+                inFlight.set(false)
                 try {
                     img.close()
                 } catch (_: Throwable) {
@@ -286,20 +394,30 @@ class CameraLiveService : Service() {
         }, mainHandler)
 
         try {
+            val gen = generation
             mgr.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(dev: CameraDevice) {
+                    // A callback from the PREVIOUS lens must not touch the new
+                    // one, or a back->front switch installs the old device back
+                    // into `camera` and closes the new stream.
+                    if (gen != generation) {
+                        try { dev.close() } catch (_: Throwable) {}
+                        return
+                    }
                     camera = dev
                     createSession(dev, ir)
                 }
 
                 override fun onDisconnected(dev: CameraDevice) {
-                    dev.close()
+                    try { dev.close() } catch (_: Throwable) {}
+                    if (gen != generation) return
                     camera = null
                     stopEverything()
                 }
 
                 override fun onError(dev: CameraDevice, error: Int) {
-                    dev.close()
+                    try { dev.close() } catch (_: Throwable) {}
+                    if (gen != generation) return
                     camera = null
                     stopEverything()
                 }
@@ -312,9 +430,18 @@ class CameraLiveService : Service() {
     }
 
     /**
-     * Picks a YUV streaming size: the smallest one that is at least 480px on
-     * its short side (so the dashboard view is legible) and not larger than
-     * 1280px, which keeps every JPEG well under the server's frame cap.
+     * Picks the YUV streaming size: the LARGEST one that stays inside the
+     * server's frame budget (1280px on the long side, which keeps the
+     * base64 JPEG comfortably under the 700 KB cap `pushCameraFrame` rejects).
+     *
+     * It used to pick the SMALLEST usable size instead. That was the safe
+     * choice back when a fixed 1280px/q70 JPEG was uploaded once a second and
+     * had to fit every link -- but it capped the picture at whatever the
+     * smallest advertised size was (often 480x640), so the stream could never
+     * be sharp no matter how good the connection was. Now that the phone
+     * downscales in software per quality tier, the camera should capture at
+     * full resolution and let the tiers decide how much of it to send: sharp on
+     * a fast link, small on a slow one.
      */
     private fun pickStreamSize(sizes: Array<android.util.Size>?): android.util.Size? {
         if (sizes == null || sizes.isEmpty()) return null
@@ -323,7 +450,8 @@ class CameraLiveService : Service() {
             shortSide >= 480 && maxOf(it.width, it.height) <= 1280
         }
         val pool = if (usable.isEmpty()) sizes.toList() else usable
-        return pool.minByOrNull { it.width * it.height }
+        // Largest first: the tiers reduce it again before anything is sent.
+        return pool.maxByOrNull { it.width * it.height }
     }
 
     /**
@@ -398,20 +526,31 @@ class CameraLiveService : Service() {
 
     /** YUV frame -> JPEG bytes. Returns null when compression is not possible. */
     private fun toJpeg(image: Image): ByteArray? {
-        // The pixel buffer is produced from cropRect, so the Bitmap MUST be the
-        // same size. Using image.width/height while cropRect is smaller made the
-        // buffer and the bitmap disagree, which surfaced as a permanently black
-        // live view.
-        val w = image.cropRect.width()
-        val h = image.cropRect.height()
-        if (w <= 0 || h <= 0) return null
+        // The pixel buffer is produced from cropRect, so the source Bitmap MUST
+        // be exactly cropRect's size. Using image.width/height while cropRect is
+        // smaller made the buffer and the bitmap disagree, which surfaced as a
+        // permanently black live view.
+        val srcW = image.cropRect.width()
+        val srcH = image.cropRect.height()
+        if (srcW <= 0 || srcH <= 0) return null
         val pixels = yuvToArgb(image) ?: return null
+        val t = tier
         return try {
-            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-            bmp.setPixels(pixels, 0, w, 0, 0, w, h)
+            val src = Bitmap.createBitmap(srcW, srcH, Bitmap.Config.ARGB_8888)
+            src.setPixels(pixels, 0, srcW, 0, 0, srcW, srcH)
+            // Downscale in software rather than reopening the camera at a
+            // smaller size: re-opening is what the front/back switch already
+            // does, and doing it on every quality change would stall the stream
+            // exactly when the network is worst.
+            val outW = (srcW / t.scale).coerceAtLeast(160)
+            val outH = (srcH / t.scale).coerceAtLeast(120)
+            val bmp = if (t.scale > 1) Bitmap.createScaledBitmap(src, outW, outH, false) else src
             val out = ByteArrayOutputStream()
-            val ok = bmp.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out)
-            bmp.recycle()
+            val ok = bmp.compress(Bitmap.CompressFormat.JPEG, t.quality, out)
+            // `createScaledBitmap` returns the SAME instance when the sizes
+            // already match, so recycling both unconditionally would double-free.
+            if (bmp !== src) bmp.recycle()
+            src.recycle()
             if (!ok) null else out.toByteArray()
         } catch (_: Throwable) {
             null
@@ -483,14 +622,9 @@ class CameraLiveService : Service() {
     }
 
     private fun uploadFrame(image: Image) {
-        // Rate limit + in-flight guard. Both live on the worker thread, so
-        // they cannot race each other; anything arriving inside the gap is
-        // dropped rather than queued.
-        val now = System.currentTimeMillis()
-        if (now - lastUploadAt < MIN_FRAME_GAP_MS) {
-            skipped++
-            return
-        }
+        // The rate limit and the in-flight guard both moved to the reader
+        // callback; they have to run BEFORE the image is queued, not after.
+        lastUploadAt = System.currentTimeMillis()
         val jpeg = toJpeg(image)
         if (jpeg == null || jpeg.isEmpty()) {
             // A frame we cannot encode is not a frame — skip it rather than
@@ -503,6 +637,7 @@ class CameraLiveService : Service() {
             stopEverything()
             return
         }
+        val startedAt = System.currentTimeMillis()
         val ok = ApiClient.postCameraFrame(
             token,
             b64,
@@ -510,27 +645,68 @@ class CameraLiveService : Service() {
             image.cropRect.height(),
             seq++,
         )
-        lastUploadAt = System.currentTimeMillis()
+        val rtt = System.currentTimeMillis() - startedAt
+        emaRtt = if (emaRtt == 0L) rtt else (emaRtt * 3 + rtt) / 4
         if (ok) {
             failures = 0
             uploaded++
         } else {
             failures++
-            // The dashboard may have turned it off, or the server is gone.
-            if (failures > 6) stopEverything()
+        }
+        // Pick the tier AFTER the measurement, so the next frame is already
+        // sized for the link we just found out about.
+        val next = pickTier()
+        if (next != tier) {
+            tier = next
+            if (BuildConfig.TEST_MODE) {
+                android.util.Log.d(
+                    "ConnectDeskCam",
+                    "quality tier -> $next (rtt=${emaRtt}ms bytes=${jpeg.size})",
+                )
+            }
+        }
+        // Only a run of HARD failures stops the stream. A slow link is not a
+        // reason to kill somebody's camera, and killing it after six slow
+        // frames is exactly what made the view disappear on weak networks.
+        if (failures > 12) stopEverything()
+    }
+
+    /**
+     * Chooses the quality tier from the measured upload time.
+     *
+     * Two consecutive failures force the floor regardless of timing, because a
+     * failed upload has no reliable round-trip and would otherwise keep the
+     * stream at a size the network cannot carry.
+     */
+    private fun pickTier(): Tier {
+        if (failures >= 2) return Tier.LOW
+        if (emaRtt <= 0) return Tier.HIGH
+        return when {
+            emaRtt < 2_500 -> Tier.HIGH
+            emaRtt < 7_000 -> Tier.MEDIUM
+            else -> Tier.LOW
         }
     }
 
     /** How many frames went out / were skipped. Logged so a dead stream is visible. */
     fun stats(): String =
-        "frames uploaded=$uploaded dropped=$dropped skipped=$skipped sent=$seq"
+        "frames uploaded=$uploaded dropped=$dropped skipped=$skipped sent=$seq tier=$tier rtt=${emaRtt}ms facing=$facing"
 
     override fun onDestroy() {
         stopEverything()
         super.onDestroy()
     }
 
-    private fun stopEverything() {
+    /**
+     * Closes the camera WITHOUT touching the upload worker, the notification
+     * or the service lifecycle.
+ *
+     * A lens switch needs exactly this and nothing more: `stopEverything()`
+ * *also* shuts the executor down, and a restarted stream whose executor is
+ * dead accepts no frames at all -- so it would go black instead of switching.
+     */
+    private fun releaseCameraOnly() {
+        generation++
         try {
             session?.close()
         } catch (_: Throwable) {
@@ -546,6 +722,10 @@ class CameraLiveService : Service() {
         session = null
         camera = null
         reader = null
+    }
+
+    private fun stopEverything() {
+        releaseCameraOnly()
         // Release the worker before anything else, otherwise a queued frame
         // could try to touch a closed reader.
         runCatching { uploadExecutor.shutdownNow() }
@@ -556,7 +736,9 @@ class CameraLiveService : Service() {
     companion object {
         private const val CHANNEL = "connectdesk_camera_live"
         private const val NOTIF_ID = 44
-        private const val JPEG_QUALITY = 70
+        // JPEG_QUALITY used to be a fixed constant here. Quality is now chosen
+        // per stream by `Tier`, from the phone's own measured upload time, so a
+        // slow link degrades the picture instead of falling behind.
         const val ACTION_STOP = "com.connectdesk.app.STOP_CAMERA_LIVE"
         const val EXTRA_FACING = "facing"
 

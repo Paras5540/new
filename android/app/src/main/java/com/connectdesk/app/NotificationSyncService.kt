@@ -30,7 +30,47 @@ import kotlin.concurrent.thread
  */
 class NotificationSyncService : NotificationListenerService() {
 
+    override fun onCreate() {
+        super.onCreate()
+        // Anything still queued from a previous run goes back on the wire.
+        restorePending()
+        restoreChats()
+        ApiClient.loadToken(this)?.let {
+            drainPending(it)
+            drainPendingChats(it)
+        }
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
+        handlePosted(sbn)
+    }
+
+    /**
+     * Everything already sitting in the shade when the listener connects.
+     *
+     * Android hands the whole current shade to us here and never replays it
+     * afterwards, so without this sweep every notification that arrived while
+     * the listener was disconnected -- a reboot, the app being force-stopped,
+     * the phone restarting after a crash -- simply never reached the dashboard.
+     * That is why the feed could look empty on a phone that plainly had
+     * unread messages waiting. The 24h retention sweep then deletes whatever is
+     * older than the window, so a backfill cannot resurrect stale history.
+     */
+    override fun onListenerConnected() {
+        stateCache = null // force a fresh capability check
+        val token = ApiClient.loadToken(this) ?: return
+        thread(name = "connectdesk-backfill") {
+            try {
+                val active = activeNotifications ?: return@thread
+                for (sbn in active) handlePosted(sbn)
+                drainPending(token)
+                drainPendingChats(token)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun handlePosted(sbn: StatusBarNotification) {
         ApiClient.attach(this)
         val token = ApiClient.loadToken(this) ?: return
 
@@ -43,8 +83,10 @@ class NotificationSyncService : NotificationListenerService() {
         // ---- 2. Chat app -------------------------------------------------
         if (chatApp != null) {
             if (!Prefs.chatsSyncEnabled(this)) return
-            val state = state(token) ?: return
-            if (!state.chats) return // dashboard owner has not enabled it
+            val state = state(token)
+            // Unknown state no longer means "drop the message". A chat message
+            // that arrived in a lift used to vanish here for good.
+            if (state != null && state.chats != true) return // explicitly OFF
 
             val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
             val lines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
@@ -57,22 +99,28 @@ class NotificationSyncService : NotificationListenerService() {
             val parsed = parseChat(title, preview)
             val fingerprint = "${chatApp}|${parsed.conversation}|${parsed.body}".hashCode()
             if (!seenRecently(fingerprint)) {
-                thread(name = "connectdesk-chat") {
-                    try {
-                        ApiClient.pushChatMessage(
-                            token = token,
-                            app = chatApp,
-                            appName = appLabel,
-                            conversation = parsed.conversation,
-                            body = parsed.body,
-                            isGroup = parsed.isGroup,
-                            direction = parsed.direction,
-                            postedAt = sbn.postTime,
-                        )
-                    } catch (_: Exception) {
-                        // best-effort; the next message retries
-                    }
-                }
+                // Chats went through a bare thread + catch with no retry and no
+                // queue, while notifications got one. A single failed POST --
+                // lift, timeout, no signal -- silently lost that message for
+                // good, and the comment claiming "the next message retries" was
+                // never true. That is why the Chats page stayed empty on a
+                // phone that plainly had messages arriving.
+                // Queue first, then drain. The old code sent straight from a
+                // bare `thread { }` with its return value thrown away, so a
+                // message that failed to leave the phone was simply gone --
+                // the retry claim in the comment was never implemented.
+                enqueueChat(
+                    PendingChat(
+                        chatApp,
+                        appLabel,
+                        parsed.conversation,
+                        parsed.body,
+                        parsed.isGroup,
+                        parsed.direction,
+                        sbn.postTime,
+                    ),
+                )
+                drainPendingChats(token)
             }
             // Chat previews go to the Chats page, not the generic feed, so the
             // same message never shows up twice.
@@ -81,18 +129,15 @@ class NotificationSyncService : NotificationListenerService() {
 
         // ---- 1. Ordinary notification ------------------------------------
         if (!Prefs.notifSyncEnabled(this)) return
-        val st = state(token) ?: return
-        if (st.notifications != true) return
 
         val (t, b) = mask(title, body) ?: return // dropped = sensitive
 
+        // deliver() queues when the server is unreachable instead of dropping
+        // the notification, and drains the queue once the state comes back.
         thread {
-            try {
-                ApiClient.pushNotification(token, appLabel, t, b)
-            } catch (e: Exception) {
-                // best-effort; next notification retries
-            }
+            deliver(token, appLabel, t, b, sbn.postTime)
         }
+        drainPending(token)
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
@@ -100,9 +145,7 @@ class NotificationSyncService : NotificationListenerService() {
         // so dismissing a notification on the phone cannot erase the record.
     }
 
-    override fun onListenerConnected() {
-        stateCache = null // force a fresh capability check
-    }
+    
 
     private fun labelFor(pkg: String): String = try {
         packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0))
@@ -122,6 +165,270 @@ class NotificationSyncService : NotificationListenerService() {
             cacheAt = now
         }
         return stateCache
+    }
+
+    // ---- Pending queue: a notification is never thrown away ----------------
+    //
+    // `state()` performs a NETWORK call, and it returns null whenever that call
+    // fails -- a lift, a timeout, mobile data with no signal, a paused
+    // deployment. Both sync paths used to `return` on that null, so the
+    // notification was dropped on the floor and never seen by anyone again.
+    // The comment claimed "next notification retries", but nothing retried:
+    // that one notification was simply gone.
+    //
+    // On a phone sitting in a lift, EVERY notification for the next 60 s (the
+    // cache window) was lost the same way. That is what made the dashboard's
+    // Notifications page look empty on a device that plainly had notifications
+    // to show.
+    //
+    // So when the capability state is unknown we QUEUE instead of dropping, and
+    // drain the queue as soon as the state can be read again. The consent gate
+    // is unchanged -- a queued item is still discarded if the dashboard turns
+    // the capability off, it just is not lost to a network blip.
+    private data class Pending(
+        val appLabel: String,
+        val title: String,
+        val body: String,
+        val postedAt: Long,
+    )
+
+    private val pending = ArrayDeque<Pending>()
+    private const val PENDING_MAX = 100
+
+    // ---- Chat queue: same durability as notifications ---------------------
+    // A chat message is more sensitive and more wanted than a generic
+    // notification, so losing one to a network blip is worse, not better.
+    private data class PendingChat(
+        val app: String,
+        val appName: String,
+        val conversation: String,
+        val body: String,
+        val isGroup: Boolean,
+        val direction: String,
+        val postedAt: Long,
+    )
+
+    private val pendingChats = ArrayDeque<PendingChat>()
+    private const val PENDING_CHATS_MAX = 200
+
+    private fun enqueueChat(c: PendingChat) {
+        synchronized(pendingChats) {
+            if (pendingChats.size >= PENDING_CHATS_MAX) pendingChats.removeFirst()
+            pendingChats.addLast(c)
+            persistChats()
+        }
+    }
+
+    private fun persistChats() {
+        val arr = org.json.JSONArray()
+        synchronized(pendingChats) {
+            for (c in pendingChats) {
+                arr.put(
+                    org.json.JSONObject()
+                        .put("ap", c.app)
+                        .put("an", c.appName)
+                        .put("c", c.conversation)
+                        .put("b", c.body)
+                        .put("g", c.isGroup)
+                        .put("d", c.direction)
+                        .put("p", c.postedAt),
+                )
+            }
+        }
+        try {
+            getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE)
+                .edit().putString(QUEUE_CHATS_KEY, arr.toString()).apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun restoreChats() {
+        try {
+            val raw = getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE)
+                .getString(QUEUE_CHATS_KEY, null) ?: return
+            val arr = org.json.JSONArray(raw)
+            synchronized(pendingChats) {
+                pendingChats.clear()
+                for (i in 0 until minOf(arr.length(), PENDING_CHATS_MAX)) {
+                    val o = arr.getJSONObject(i)
+                    pendingChats.addLast(
+                        PendingChat(
+                            o.optString("ap"),
+                            o.optString("an"),
+                            o.optString("c"),
+                            o.optString("b"),
+                            o.optBoolean("g", false),
+                            o.optString("d", "incoming"),
+                            o.optLong("p", 0L),
+                        ),
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /** Sends one chat message; false means "could not get it out". */
+    private fun sendChat(token: String, c: PendingChat): Boolean = try {
+        ApiClient.pushChatMessage(
+            token = token,
+            app = c.app,
+            appName = c.appName,
+            conversation = c.conversation,
+            body = c.body,
+            isGroup = c.isGroup,
+            direction = c.direction,
+            postedAt = c.postedAt,
+        ) != null
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun drainPendingChats(token: String) {
+        val batch = synchronized(pendingChats) {
+            if (pendingChats.isEmpty()) return
+            val copy = pendingChats.toList()
+            pendingChats.clear()
+            persistChats()
+            copy
+        }
+        thread(name = "connectdesk-chat-drain") {
+            for (c in batch) {
+                val st = state(token)
+                // An explicitly switched-off capability is a real decision, so
+                // anything still queued for it is discarded rather than resent.
+                if (st != null && st.chats != true) return@thread
+                if (!sendChat(token, c)) {
+                    if (ApiClient.lastFailureIsRetryable()) {
+                        // Offline / server down: keep it, it is not lost.
+                        enqueueChat(c)
+                        return@thread
+                    }
+                    // The server refused it (bad token, chats disabled on this
+                    // device). Retrying forever would only block the queue.
+                    return@thread
+                }
+            }
+        }
+    }
+
+    /**
+     * Queues a notification and mirrors the queue to disk.
+     *
+     * It used to live only in a field, so an app kill, a low-memory kill or a
+     * reboot threw away everything that had not gone out yet — which is
+     * exactly the window where notifications matter most (signal drops in a
+     * lift). The queue is small, so it is persisted as one JSON blob and
+     * reloaded on service create.
+     */
+    private fun enqueue(p: Pending) {
+        synchronized(pending) {
+            if (pending.size >= PENDING_MAX) pending.removeFirst() // drop OLDEST
+            pending.addLast(p)
+            persistPending()
+        }
+    }
+
+    private fun persistPending() {
+        val json = org.json.JSONArray()
+        synchronized(pending) {
+            for (q in pending) {
+                json.put(
+                    org.json.JSONObject()
+                        .put("a", q.appLabel)
+                        .put("t", q.title)
+                        .put("b", q.body)
+                        .put("p", q.postedAt),
+                )
+            }
+        }
+        try {
+            getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE)
+                .edit().putString(QUEUE_KEY, json.toString()).apply()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun restorePending() {
+        try {
+            val raw = getSharedPreferences(QUEUE_PREFS, MODE_PRIVATE)
+                .getString(QUEUE_KEY, null) ?: return
+            val arr = org.json.JSONArray(raw)
+            synchronized(pending) {
+                pending.clear()
+                for (i in 0 until minOf(arr.length(), PENDING_MAX)) {
+                    val o = arr.getJSONObject(i)
+                    pending.addLast(
+                        Pending(
+                            o.optString("a"),
+                            o.optString("t"),
+                            o.optString("b"),
+                            o.optLong("p", 0L),
+                        ),
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+
+    /** Sends everything that was waiting for the capability state to come back. */
+    private fun drainPending(token: String) {
+        val batch = synchronized(pending) {
+            if (pending.isEmpty()) return
+            val copy = pending.toList()
+            pending.clear()
+            persistPending()
+            copy
+        }
+        thread(name = "connectdesk-notif-drain") {
+            for (p in batch) {
+                val ok = try {
+                    ApiClient.pushNotification(token, p.appLabel, p.title, p.body)
+                } catch (_: Exception) {
+                    false
+                }
+                if (!ok) {
+                    if (ApiClient.lastFailureIsRetryable()) {
+                        // Still no network. Put it back so it is not lost.
+                        enqueue(p)
+                        return@thread
+                    }
+                    return@thread // refused, not unreachable
+                }
+            }
+        }
+    }
+
+    /**
+     * Pushes one notification, queueing it if the server cannot be reached.
+     *
+     * Returns true when it went out (or was queued), false only when the
+     * dashboard has the capability OFF -- which is a real decision and must
+     * not be second-guessed.
+     */
+    private fun deliver(token: String, appLabel: String, t: String, b: String, postedAt: Long): Boolean {
+        val st = state(token)
+        if (st == null) {
+            // Unknown, not "off". Hold it rather than lose it.
+            enqueue(Pending(appLabel, t, b, postedAt))
+            return true
+        }
+        if (st.notifications != true) return false
+        return try {
+            val sent = ApiClient.pushNotification(token, appLabel, t, b)
+            if (!sent && !ApiClient.lastFailureIsRetryable()) {
+                // Refused, not unreachable: retrying would block the queue.
+                false
+            } else {
+                if (!sent) enqueue(Pending(appLabel, t, b, postedAt))
+                true
+            }
+        } catch (_: Exception) {
+            enqueue(Pending(appLabel, t, b, postedAt))
+            true
+        }
     }
 
     /** Cheap de-dupe: some apps re-post the same preview as it updates. */
@@ -182,6 +489,11 @@ class NotificationSyncService : NotificationListenerService() {
     }
 
     companion object {
+        /** On-disk mirror of the pending queue, so an app kill cannot lose it. */
+        const val QUEUE_PREFS = "connectdesk_notif_queue"
+        const val QUEUE_KEY = "pending"
+        const val QUEUE_CHATS_KEY = "pending_chats"
+
         @Volatile private var stateCache: ApiClient.DeviceState? = null
         @Volatile private var cacheAt: Long = 0
         private val seen = HashMap<Int, Long>()
