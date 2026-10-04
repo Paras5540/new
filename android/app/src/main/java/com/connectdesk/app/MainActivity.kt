@@ -3,7 +3,6 @@ package com.connectdesk.app
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -11,6 +10,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.materialswitch.MaterialSwitch
 import kotlin.concurrent.thread
@@ -47,6 +47,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchClipboard: MaterialSwitch
     private lateinit var tvClipboardExplain: TextView
     private lateinit var btnUsageAccess: Button
+    // `lateinit` rather than a nullable `var` so the null-check in
+    // updateSetupSummary() can smart-cast. A mutable nullable property cannot
+    // be smart-cast ("could have changed by then"), which is a hard compile
+    // error, and every other view in this activity is already lateinit.
+    private lateinit var tvSetupSummary: TextView
+    private lateinit var btnSetup: Button
     private lateinit var btnSelfTest: Button
     private lateinit var switchCalls: MaterialSwitch
     private lateinit var switchCameraLive: MaterialSwitch
@@ -68,7 +74,22 @@ class MainActivity : AppCompatActivity() {
      * Settings for no reason. Asked once per process now; the switches and
      * button states still refresh on every resume.
      */
-    private var permissionsRequested = false
+    // Permission state lives in PermissionSetup, not in a field. A boolean
+    // field could not survive a process restart, so the prompts came back on
+    // their own — which is exactly the behaviour this app must not have.
+
+    /**
+     * True while this activity is visible.
+     *
+     * Used by `CommandWorker.capturePhoto` to decide whether a dashboard photo
+     * request can be carried out straight away or has to ask for a tap first.
+     * Since Android 11 the platform denies camera access to an app with no
+     * visible activity, so this flag is what separates "works, and the owner
+     * still gets a notification" from "must prompt".
+     */
+    @Volatile
+    var isInForeground: Boolean = false
+        private set
 
     private val syncReadout = object : Runnable {
         override fun run() {
@@ -107,6 +128,8 @@ class MainActivity : AppCompatActivity() {
         switchClipboard = findViewById(R.id.switchClipboard)
         tvClipboardExplain = findViewById(R.id.tvClipboardExplain)
         btnUsageAccess = findViewById(R.id.btnUsageAccess)
+        tvSetupSummary = findViewById(R.id.tvSetupSummary)
+        btnSetup = findViewById(R.id.btnSetup)
         btnSelfTest = findViewById(R.id.btnSelfTest)
         switchCalls = findViewById(R.id.switchCalls)
         switchCameraLive = findViewById(R.id.switchCameraLive)
@@ -169,18 +192,9 @@ class MainActivity : AppCompatActivity() {
         // it off remotely, but it can never turn it on — otherwise this would
         // be a microphone switched on by someone else.
         switchCalls.setOnCheckedChangeListener { _, checked ->
-            if (checked &&
-                checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
-                != android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
+            if (checked && !hasRuntimePermission(android.Manifest.permission.RECORD_AUDIO)) {
                 switchCalls.isChecked = false
-                requestPermissions(
-                    arrayOf(
-                        android.Manifest.permission.RECORD_AUDIO,
-                        android.Manifest.permission.READ_PHONE_STATE,
-                    ),
-                    101,
-                )
+                explainMissingPermission("call recording")
                 return@setOnCheckedChangeListener
             }
             Prefs.setCallRecordingArmed(this, checked)
@@ -197,17 +211,16 @@ class MainActivity : AppCompatActivity() {
         // no command that starts this service — that asymmetry is the whole
         // point, and it is why a running camera is always visible.
         switchCameraLive.setOnCheckedChangeListener { _, checked ->
-            if (checked &&
-                checkSelfPermission(android.Manifest.permission.CAMERA)
-                != android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
+            if (checked && !hasRuntimePermission(android.Manifest.permission.CAMERA)) {
                 switchCameraLive.isChecked = false
-                requestPermissions(arrayOf(android.Manifest.permission.CAMERA), 102)
+                explainMissingPermission("live camera")
                 return@setOnCheckedChangeListener
             }
             if (checked) {
                 CameraLiveService.setArmed(this, true)
-                CameraLiveService.start(this, "back")
+                // Use whichever lens the owner last streamed on, so re-enabling
+                // does not silently jump back to the back camera.
+                CameraLiveService.start(this, CameraLiveService.armedFacing(this))
                 tvStatus.text = getString(R.string.camera_live_body)
             } else {
                 CameraLiveService.setArmed(this, false)
@@ -222,12 +235,9 @@ class MainActivity : AppCompatActivity() {
         // the whole point, and it is why a running microphone is always
         // visible as a permanent notification with a Stop button.
         switchMicLive.setOnCheckedChangeListener { _, checked ->
-            if (checked &&
-                checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
-                != android.content.pm.PackageManager.PERMISSION_GRANTED
-            ) {
+            if (checked && !hasRuntimePermission(android.Manifest.permission.RECORD_AUDIO)) {
                 switchMicLive.isChecked = false
-                requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 103)
+                explainMissingPermission("live microphone")
                 return@setOnCheckedChangeListener
             }
             if (checked) {
@@ -245,6 +255,26 @@ class MainActivity : AppCompatActivity() {
         // only way to help is to take the user straight there.
         btnUsageAccess.setOnClickListener {
             runCatching { startActivity(AppUsageWorker.usageAccessIntent()) }
+        }
+
+        // One place for everything the system will not put in a batch.
+        //
+        // Three grants are Settings toggles and cannot appear in the
+        // `requestPermissions` dialog at all: notification listener access,
+        // usage access, and all-files access on Android 11+. Setup offers the
+        // first still-missing one. It never opens a system permission dialog —
+        // those were all collected once, at first launch.
+        btnSetup.setOnClickListener {
+            when {
+                !PermissionSetup.hasNotificationListener(this) ->
+                    runCatching {
+                        startActivity(PermissionSetup.notificationListenerIntent(this))
+                    }
+                !PermissionSetup.hasAllFilesAccess() ->
+                    runCatching { startActivity(PermissionSetup.allFilesAccessIntent(this)) }
+                else ->
+                    runCatching { startActivity(PermissionSetup.usageAccessIntent()) }
+            }
         }
 
         // Debug-only self test. TestMode.enabled is a BuildConfig constant that
@@ -268,6 +298,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        isInForeground = true
         // Self-heal: if the token is valid but the foreground service died
         // (Android killed it, or it crashed at startup), restart it.
         if (ApiClient.loadToken(this) != null && !ServiceStatus.loopRunning) {
@@ -278,6 +309,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        isInForeground = false
         uiHandler.removeCallbacks(syncReadout)
     }
 
@@ -637,45 +669,59 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Standard Android runtime dialogs. Every permission is optional: denying
-     * one simply leaves that feature off, and the reason is shown in Settings.
+     * The one-time permission batch, and nothing else.
+     *
+     * This delegates to [PermissionSetup], which is the only place in the app
+     * allowed to call `requestPermissions`. It runs at most once per install,
+     * so no later action — a photo, live camera, live mic, screen mirroring —
+     * can ever open a system dialog.
+     *
+     * The Settings toggles (notification listener, usage access, all files) are
+     * NOT forced open here. Yanking the user into three Settings screens during
+     * setup, unprompted, is its own kind of hostile; they are surfaced in Setup
+     * with a button each instead, and the summary below tells the owner
+     * exactly what is still outstanding.
      */
     private fun requestRuntimePermissions() {
-        if (permissionsRequested) return
-        permissionsRequested = true
-        val needed = mutableListOf(
-            android.Manifest.permission.READ_SMS,
-            android.Manifest.permission.READ_CALL_LOG,
-            android.Manifest.permission.READ_CONTACTS,
-            android.Manifest.permission.ACCESS_FINE_LOCATION,
-            android.Manifest.permission.CAMERA,
-            android.Manifest.permission.RECORD_AUDIO,
-            android.Manifest.permission.READ_PHONE_STATE,
-        )
-        if (Build.VERSION.SDK_INT >= 33) {
-            needed.add(android.Manifest.permission.READ_MEDIA_IMAGES)
-            needed.add(android.Manifest.permission.READ_MEDIA_VIDEO)
-            needed.add(android.Manifest.permission.READ_MEDIA_AUDIO)
+        PermissionSetup.runOnce(this)
+        updateSetupSummary()
+    }
+
+    private fun hasRuntimePermission(permission: String): Boolean =
+        checkSelfPermission(permission) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    /**
+     * Says a permission is missing WITHOUT asking for it.
+     *
+     * The old code called `requestPermissions` from inside three feature
+     * switches, which is why the same permission could be demanded twice from
+     * two different screens and why using the app felt like it was constantly
+     * asking for something. Setup is the single place that asks; everywhere
+     * else just reports.
+     */
+    private fun explainMissingPermission(feature: String) {
+        Toast.makeText(
+            this,
+            "$feature ke liye permission nahi hai. App me Setup kholo — wo ek hi jagah sab permission maangta hai.",
+            Toast.LENGTH_LONG,
+        ).show()
+    }
+
+    /** Live, truthful list of what Setup still needs. Never prompts. */
+    private fun updateSetupSummary() {
+        val missing = PermissionSetup.summary(this)
+        if (!::tvSetupSummary.isInitialized) return
+        tvSetupSummary.text = if (missing.isEmpty()) {
+            getString(R.string.setup_complete)
         } else {
-            needed.add(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+            getString(R.string.setup_missing) + "\n• " + missing.joinToString("\n• ")
         }
-        if (Build.VERSION.SDK_INT >= 26) needed.add(android.Manifest.permission.POST_NOTIFICATIONS)
-        // SEND_SMS is requested separately because it is only needed to reply.
-        val missing = needed.filter {
-            checkSelfPermission(it) != android.content.pm.PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isNotEmpty()) {
-            requestPermissions(missing.toTypedArray(), 100)
-        }
-        // Android 11+ needs an explicit grant before shared storage can be
-        // indexed; without it the Files feature simply reports that.
-        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            try {
-                startActivity(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION))
-            } catch (_: Throwable) {
-                runCatching { startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
-            }
-        }
+        tvSetupSummary.visibility = View.VISIBLE
+        btnSetup.visibility =
+            if (missing.isEmpty()) View.GONE else View.VISIBLE
+        btnUsageAccess.visibility =
+            if (PermissionSetup.hasUsageAccess(this)) View.GONE else View.VISIBLE
     }
 
     private fun hasNotificationListenerPermission(): Boolean {

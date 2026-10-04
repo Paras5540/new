@@ -194,9 +194,30 @@ class CameraLiveService : Service() {
         val yuvSizes = configMap?.getOutputSizes(ImageFormat.YUV_420_888)
         val size = pickStreamSize(yuvSizes)
         if (size == null) {
-            stopEverything()
+            // No YUV output at all is unusual but legal; fall back to the
+            // smallest advertised size of any format rather than shutting the
+            // camera down, so the owner still gets a picture.
+            val anySize = configMap?.outputSizes?.values
+                ?.filter { it != null }
+                ?.flatten()
+                ?.minByOrNull { it.width * it.height }
+            if (anySize == null) {
+                stopEverything()
+                return
+            }
+            streamWidth = anySize.width
+            streamHeight = anySize.height
+            openWith(mgr, id, anySize)
             return
         }
+        streamWidth = size.width
+        streamHeight = size.height
+        openWith(mgr, id, size)
+    }
+
+    /** Builds the reader and opens the camera on the main looper. */
+    @android.annotation.SuppressLint("MissingPermission")
+    private fun openWith(mgr: CameraManager, id: String, size: android.util.Size) {
         streamWidth = size.width
         streamHeight = size.height
 
@@ -204,19 +225,53 @@ class CameraLiveService : Service() {
             size.width,
             size.height,
             ImageFormat.YUV_420_888,
-            2,
+            // THREE buffers, not two. Two left no headroom: while a frame is
+            // being JPEG-encoded on the worker thread the camera keeps
+            // producing, and a reader that is already at maxImages makes
+            // `acquireLatestImage` throw. One spare keeps the pipeline fed.
+            3,
         )
         reader = ir
         // Frames arrive on the main looper, but the upload is HTTPS: doing it
         // inline threw NetworkOnMainThreadException and killed the whole
         // stream after the first frame. The image is handed to a single
         // worker thread instead, which also keeps frames strictly ordered.
+        //
+        // AND THE IMAGE IS ALWAYS CLOSED, ON EVERY PATH. This is not a leak
+        // nitpick — it is the bug that made the app close itself the moment
+        // live camera was switched on from the UI.
+        //
+        // `ImageReader.newInstance(..., 2)` allows exactly TWO undrained images.
+        // The camera produces ~30 frames/s and `uploadFrame` deliberately drops
+        // all but roughly one per second, so the old code returned from the
+        // rate-limit branch WITHOUT closing. At 30 fps that leaked ~29 images
+        // a second, the reader hit maxImages within a fraction of a second, and
+        // the next `acquireLatestImage()` on the MAIN looper threw
+        //
+        //     IllegalStateException: maxImages (2) has been reached
+        //
+        // An uncaught exception on the main looper is a process kill: the app
+        // closed instantly every time, with no visible error, and the user saw
+        // it as "live camera ON karne par app band ho jaata hai".
+        //
+        // Closing in a `finally` inside `upload` makes the invariant
+        // structural: adding a new early return above cannot reintroduce it.
         ir.setOnImageAvailableListener({ r ->
-            val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+            val img = try {
+                r.acquireLatestImage()
+            } catch (_: IllegalStateException) {
+                // The reader is being torn down. Nothing to drain.
+                return@setOnImageAvailableListener
+            } ?: return@setOnImageAvailableListener
             try {
                 uploadExecutor.execute { upload(img) }
             } catch (_: Throwable) {
-                img.close()
+                // Executor already shut down (stopEverything ran). Close here,
+                // since `upload` — which owns closing — never got the image.
+                try {
+                    img.close()
+                } catch (_: Throwable) {
+                }
             }
         }, mainHandler)
 
@@ -405,6 +460,19 @@ class CameraLiveService : Service() {
     }
 
     private fun upload(image: Image) {
+        // EVERY exit path from this method must close the Image. See the
+        // listener below for why that is not a style preference.
+        try {
+            uploadFrame(image)
+        } finally {
+            try {
+                image.close()
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    private fun uploadFrame(image: Image) {
         // Rate limit + in-flight guard. Both live on the worker thread, so
         // they cannot race each other; anything arriving inside the gap is
         // dropped rather than queued.
@@ -487,6 +555,10 @@ class CameraLiveService : Service() {
          * user explicitly turns it on, never from a server command.
          */
         fun start(context: Context, facing: String = "back") {
+            // Remember the lens. Without this, re-enabling the switch after a
+            // stop always fell back to the back camera, so a front-camera setup
+            // silently became a back-camera setup on the next start.
+            setArmedFacing(context, facing)
             val i = Intent(context, CameraLiveService::class.java)
                 .setAction("START")
                 .putExtra(EXTRA_FACING, facing)
@@ -513,6 +585,29 @@ class CameraLiveService : Service() {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .getBoolean(KEY_ARMED, false)
 
+        /**
+         * Which lens the live stream should use.
+         *
+         * Both lenses are reachable. The dashboard's ON request carries
+         * `facing`, so asking for the front camera actually opens the front
+         * camera rather than silently defaulting to the back one — which is
+         * what made "live front camera" look broken.
+         *
+         * Note the hardware constraint that cannot be engineered around: almost
+         * no phone exposes both cameras to two apps at once, and most do not
+         * expose both to ONE app simultaneously either. So the live stream and
+         * a still capture cannot run together, and a facing change restarts the
+         * stream on the other lens rather than opening a second one.
+         */
+        fun armedFacing(context: Context): String =
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_FACING, "back") ?: "back"
+
+        fun setArmedFacing(context: Context, facing: String) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(KEY_FACING, facing).apply()
+        }
+
         fun setArmed(context: Context, armed: Boolean) {
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putBoolean(KEY_ARMED, armed).apply()
@@ -520,5 +615,6 @@ class CameraLiveService : Service() {
 
         private const val PREFS = "connectdesk_prefs"
         private const val KEY_ARMED = "cameraLiveArmed"
+        private const val KEY_FACING = "cameraLiveFacing"
     }
 }

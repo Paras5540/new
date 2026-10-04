@@ -8,11 +8,28 @@ import android.view.Gravity
 import android.view.Window
 
 /**
- * Invisible helper activity. Its only job: bring up Android's MediaProjection
- * consent dialog ("Start recording or casting with ConnectDesk?"). The OS
- * shows this dialog for EVERY session — it cannot be suppressed, which is
- * exactly the consent model this app is built on. If the user denies, the
- * command is reported failed and nothing is captured.
+ * Invisible helper activity. Its only job: make sure screen share has consent,
+ * then start it.
+ *
+ * WHY IT NO LONGER ALWAYS SHOWS THE DIALOG
+ * -----------------------------------------
+ * Android raises "Start recording or casting with ConnectDesk?" on EVERY
+ * `createScreenCaptureIntent()`. Asking once per dashboard click is therefore
+ * the platform's behaviour by design, and it is exactly what made repeated
+ * viewing feel broken: you clicked View, tapped Allow, and got a black panel
+ * until you went looking for the dialog again.
+ *
+ * But the dialog is only required to OBTAIN consent, not to use it. Once the
+ * user has allowed it, `ScreenCaptureService` keeps the granted
+ * `MediaProjection` alive (see `grantedProjection`) and Android 14+ lets a
+ * single projection back several `VirtualDisplay`s. So the second and later
+ * views reuse that consent and go straight to a picture, with no dialog.
+ *
+ * The dialog is still shown when there genuinely is no consent yet, when the
+ * user revoked it from the system UI, when Android killed the app, and on
+ * Android versions older than 14, where the platform refuses to reuse a spent
+ * projection. So consent is asked for exactly when it is needed and never
+ * skipped when it is not — the promise here is "once, not never".
  */
 class ScreenConsentActivity : Activity() {
 
@@ -25,6 +42,18 @@ class ScreenConsentActivity : Activity() {
         window.requestFeature(Window.FEATURE_NO_TITLE)
         // Transparent, non-touchable — just a host for the system dialog.
         window.setGravity(Gravity.CENTER)
+
+        val width = intent.getIntExtra(ScreenCaptureService.EXTRA_WIDTH, 720)
+        val intervalMs = intent.getIntExtra(ScreenCaptureService.EXTRA_INTERVAL_MS, 1000)
+
+        // Fast path: consent already given and the platform allows reuse, so
+        // start immediately and never flash a dialog at the user.
+        if (ScreenCaptureService.startWithStoredConsent(this, width, intervalMs)) {
+            report(true, "Screen sharing started on device (consent reused)")
+            finish()
+            return
+        }
+
         try {
             @Suppress("DEPRECATION")
             startActivityForResult(
@@ -32,6 +61,7 @@ class ScreenConsentActivity : Activity() {
                 REQUEST_CODE,
             )
         } catch (_: Exception) {
+            report(false, "Screen capture dialog could not be shown")
             finish()
         }
     }

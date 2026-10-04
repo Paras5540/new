@@ -70,4 +70,33 @@
     <string name="mic_live_stop">Stop</string>
     <string name="mic_live_toggle">Turn on live microphone</string>
     <string name="mic_live_toggle_explain">Your microphone streams to your dashboard while this is on. A permanent notification stays visible the whole time and you can stop it from there or from this screen. Nothing is saved on the phone, and ConnectDesk never turns the microphone on by itself — only you can, from here.</string>
+
+    <!-- Raised on the PHONE when the dashboard presses its live ON button.
+         The dashboard can only ask; this is the owner's decision point, so it
+         is deliberately worded as a question with an obvious way out. -->
+    <string name="live_camera_request_title">Dashboard wants to view your camera</string>
+    <string name="live_camera_request_text">Tap to open ConnectDesk and allow or refuse. Nothing is recorded until you do.</string>
+    <string name="live_mic_request_title">Dashboard wants to listen to your mic</string>
+    <string name="live_mic_request_text">Tap to open ConnectDesk and allow or refuse. Nothing is recorded until you do.</string>
+
+    <!-- Per-capture notice. Shown for EVERY photo, on both the front and the
+         back camera. There is deliberately no Allow button: the camera
+         permission is granted once in the app, and this notice exists so a
+         capture is never invisible. -->
+    <string name="photo_taken_back">ConnectDesk is taking a photo (back camera)</string>
+    <string name="photo_taken_front">ConnectDesk is taking a photo (front camera)</string>
+    <string name="photo_taken_text">The dashboard asked for this photo and you already allowed camera access for ConnectDesk.</string>
+
+    <!-- One-time setup. The system dialogs were already answered on first
+         launch; this only reports what is left and links to the Settings
+         toggles the system refuses to put in a batch. -->
+    <string name="setup_complete">Setup complete — every permission is granted. ConnectDesk will not ask again; anything the dashboard triggers will only show a notification on the phone.</string>
+    <string name="setup_missing">Still needed (Setup):</string>
+    <string name="open_setup">Open Setup</string>
+
+    <!-- Shown when the dashboard starts a screen share WITHOUT a prompt,
+         because MediaProjection consent was already given once. No button:
+         the service's permanent notification carries the Stop action. -->
+    <string name="share_started_title">Screen sharing started</string>
+    <string name="share_started_text">The dashboard is now mirroring this screen. Use the notification below to stop it.</string>
 </resources>

@@ -252,6 +252,23 @@
             android:text="@string/run_self_test"
             android:visibility="gone" />
 
+        <TextView
+            android:id="@+id/tvSetupSummary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:textColor="#E6FBFF"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btnSetup"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:text="@string/open_setup"
+            android:visibility="gone" />
+
         <Button
             android:id="@+id/btnUsageAccess"
             android:layout_width="match_parent"

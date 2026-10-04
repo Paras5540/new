@@ -71,12 +71,7 @@ class ScreenCaptureService : Service() {
     @Volatile
     private var lastUploadAt = 0L
 
-    private val projectionCallback = object : MediaProjection.Callback() {
-        override fun onStop() {
-            // User pressed "Stop" on the system cast dialog — honor it.
-            stopSelf()
-        }
-    }
+    private val projectionCallback = projectionStopCallback
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -93,8 +88,13 @@ class ScreenCaptureService : Service() {
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         val data = intent?.getParcelableExtra<Intent>(EXTRA_DATA)
-        if (resultCode == Int.MIN_VALUE || data == null) {
-            // No fresh projection consent — cannot (and must not) capture.
+
+        // A previously granted projection is reused instead of asking again —
+        // see `grantedProjection` for why this is possible and when.
+        val reuse = intent?.getBooleanExtra(EXTRA_REUSE, false) == true
+        val existing = grantedProjection
+        if (!reuse && (resultCode == Int.MIN_VALUE || data == null)) {
+            // No projection at all: cannot (and must not) capture.
             stopSelf()
             return START_NOT_STICKY
         }
@@ -111,13 +111,21 @@ class ScreenCaptureService : Service() {
         running = true
 
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        try {
-            projection = mpm.getMediaProjection(resultCode, data)
-        } catch (e: Exception) {
-            stopSelf()
-            return START_NOT_STICKY
+        if (reuse && existing != null) {
+            projection = existing
+        } else {
+            try {
+                projection = mpm.getMediaProjection(resultCode, data!!)
+            } catch (_: Exception) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
         }
         projection?.registerCallback(projectionCallback, mainHandler)
+        // Park the live projection so the NEXT session can reuse it and not
+        // show the system dialog again.
+        grantedProjection = projection
+
 
         captureThread = HandlerThread("connectdesk-capture").also { it.start() }
         captureHandler = Handler(captureThread!!.looper)
@@ -306,10 +314,11 @@ class ScreenCaptureService : Service() {
             imageReader?.close()
         } catch (_: Exception) {
         }
-        try {
-            projection?.stop()
-        } catch (_: Exception) {
-        }
+        // `projection.stop()` is DELIBERATELY not called when the token is
+        // being kept for reuse. Stopping it invalidates the consent, which is
+        // precisely why every dashboard request used to raise the system
+        // dialog again. `forgetConsent()` is the only thing that drops it, and
+        // it is reached from the app's own "forget / revoke" action.
         virtualDisplay = null
         imageReader = null
         projection = null
@@ -333,7 +342,72 @@ class ScreenCaptureService : Service() {
         const val EXTRA_DATA = "data"
         const val EXTRA_WIDTH = "width"
         const val EXTRA_INTERVAL_MS = "intervalMs"
+        const val EXTRA_REUSE = "reuseConsent"
         const val ACTION_STOP = "com.connectdesk.app.STOP_SCREEN"
+
+        /**
+         * The MediaProjection the user already consented to, kept alive
+         * between sessions.
+         *
+         * WHY THE DIALOG DOES NOT REAPPEAR NOW
+         * ------------------------------------
+         * Android shows "Start recording or casting?" on every single
+         * `createScreenCaptureIntent()`, so asking once per dashboard click is
+         * the platform's behaviour, not a choice — and it is what the owner
+         * meant by "consent har baar mat mangao".
+         *
+         * The way out is not to suppress the dialog (impossible, and we would
+         * not want to). It is to keep the granted `MediaProjection` OBJECT and
+         * hand out more `VirtualDisplay`s from it. Android 14 (API 34)
+         * explicitly supports a single `MediaProjection` driving multiple
+         * `createVirtualDisplay` calls, which is what lets one consent cover
+         * every later session.
+         *
+         * Therefore `onDestroy` releases the VirtualDisplay but does NOT call
+         * `projection.stop()` — stopping is what burns the consent.
+         *
+         * Scope, stated plainly: this lasts for the life of the PROCESS. If
+         * Android kills the app the consent is gone and the next view asks
+         * again, which is the correct and expected behaviour. Before Android 14
+         * the platform rejects a second `createVirtualDisplay` on a used
+         * projection, so `canReuseConsent` is false there and the dialog is
+         * shown honestly rather than the share silently failing.
+         */
+        @Volatile
+        private var grantedProjection: MediaProjection? = null
+
+        /**
+         * The platform callback, shared by every session.
+         *
+         * It lives in the companion rather than on the service instance because
+         * [forgetConsent] has to unregister it, and it is called from the app
+         * UI rather than from a running service.
+         */
+        private val projectionStopCallback = object : MediaProjection.Callback() {
+            override fun onStop() {
+                // The user revoked sharing from the system UI. That is a real
+                // decision and it also ends consent for good.
+                forgetConsent()
+            }
+        }
+
+        /** True when a still-valid projection is parked and the platform allows reuse. */
+        val canReuseConsent: Boolean
+            get() = grantedProjection != null && Build.VERSION.SDK_INT >= 34
+
+        /** Drops the parked consent — next share asks the user again. */
+        fun forgetConsent() {
+            val p = grantedProjection
+            grantedProjection = null
+            try {
+                p?.unregisterCallback(projectionCallback)
+            } catch (_: Exception) {
+            }
+            try {
+                p?.stop()
+            } catch (_: Exception) {
+            }
+        }
 
         /** True while the user is actively sharing their screen. */
         @Volatile
@@ -348,6 +422,24 @@ class ScreenCaptureService : Service() {
                 .putExtra(EXTRA_INTERVAL_MS, intervalMs)
             context.startForegroundService(intent)
             isSharing = true
+        }
+
+        /**
+         * Starts a share from consent the user already gave.
+         *
+         * Returns false when there is no reusable consent, in which case the
+         * caller must go through [start] with a fresh dialog result — so the
+         * share can never fail silently.
+         */
+        fun startWithStoredConsent(context: Context, width: Int, intervalMs: Int): Boolean {
+            if (!canReuseConsent) return false
+            val intent = Intent(context, ScreenCaptureService::class.java)
+                .putExtra(EXTRA_REUSE, true)
+                .putExtra(EXTRA_WIDTH, width)
+                .putExtra(EXTRA_INTERVAL_MS, intervalMs)
+            context.startForegroundService(intent)
+            isSharing = true
+            return true
         }
 
         fun stop(context: Context) {
