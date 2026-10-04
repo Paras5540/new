@@ -57,51 +57,41 @@ class DeviceService : Service() {
             running = true
             ServiceStatus.markStart()
             thread(name = "connectdesk-loop") { loop(token) }
-            // A second, faster poller so dashboard commands (media download,
-            // SMS reply, camera shot) start almost immediately instead of
-            // waiting for the next 60s heartbeat.
-            thread(name = "connectdesk-commands") { fastCommandLoop(token) }
         }
         return START_STICKY
     }
 
     private val commandBusy = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    /**
-     * Polls the command queue on a short cadence. Guarded by an atomic flag so
-     * it can never overlap with the main loop's command handling — the queue is
-     * marked delivered server-side, but overlapping polls could execute one
-     * command twice (two SMS replies, two uploads).
-     */
-    private fun fastCommandLoop(token: String) {
-        while (running) {
-            try {
-                Thread.sleep(COMMAND_POLL_MS)
-                // Commands only matter once the device is actually approved.
-                if (commandBusy.compareAndSet(false, true)) {
-                    try {
-                        val probe = ApiClient.status(token)
-                        if (probe?.status == "approved") {
-                            CommandWorker.runPending(this@DeviceService, token)
-                        }
-                    } catch (_: Throwable) {
-                    } finally {
-                        commandBusy.set(false)
-                    }
-                }
-            } catch (_: InterruptedException) {
-                return
-            } catch (_: Throwable) {
-            }
-        }
-    }
-
     private fun loop(token: String) {
         var failures = 0
+        var tick = 0
         while (running) {
             var ok = false
             try {
                 // 1. Heartbeat FIRST — never blocked by anything else.
+                //
+                // Battery and storage are cheap, but DeviceDetailWorker reads
+                // /proc/meminfo, Bluetooth state and the WiFi SSID, which is not.
+                // At the 1-second cadence that would mean parsing /proc every
+                // second forever, so the expensive detail is only attached to
+                // every DETAIL_EVERY-th heartbeat and the previous snapshot is
+                // resent in between. The server treats a missing field as "keep
+                // the old value", so the dashboard card stays current without
+                // the phone doing 60 reads a minute for data that changes once
+                // every few seconds anyway.
+                tick++
+                val detailed = tick % DETAIL_EVERY == 1
+                val detailJson =
+                    if (detailed || lastDetail == null) {
+                        val fresh = DeviceDetailWorker.toJson(
+                            DeviceDetailWorker.collect(this@DeviceService),
+                        )
+                        lastDetail = fresh
+                        fresh
+                    } else {
+                        lastDetail
+                    }
                 val battery = batteryPct()
                 val storage = storageMb()
                 val beat = ApiClient.heartbeatDetailed(
@@ -109,7 +99,7 @@ class DeviceService : Service() {
                     battery,
                     storage?.first,
                     storage?.second,
-                    DeviceDetailWorker.toJson(DeviceDetailWorker.collect(this@DeviceService)),
+                    detailJson,
                 )
                 if (beat != null) {
                     ok = true
@@ -128,14 +118,34 @@ class DeviceService : Service() {
                         ServiceStatus.markBeat(state?.status ?: beat)
                         val status = state?.status
                         if (status == "revoked") {
-                            ApiClient.clearToken(this)
-                            running = false
-                            stopSelf()
-                            return
+                            // Server-side revocation is real, but it is NOT a
+                            // logout: the token stays on the phone so that
+                            // re-approving the device from the dashboard
+                            // reconnects it with no sign-in. Previously this
+                            // branch called clearToken(), which wiped the
+                            // pairing and threw the user back to the login
+                            // form even though they had done nothing.
+                            ServiceStatus.markError("revoked from dashboard")
+                            // Nothing may be shared while revoked: shut down
+                            // every capture path exactly once.
+                            if (ScreenCaptureService.isSharing) {
+                                ScreenCaptureService.stop(this@DeviceService)
+                            }
+                            if (CameraLiveService.isArmed(this@DeviceService)) {
+                                CameraLiveService.setArmed(this@DeviceService, false)
+                                CameraLiveService.stop(this@DeviceService)
+                            }
+                            if (MicLiveService.isArmed(this@DeviceService)) {
+                                MicLiveService.setArmed(this@DeviceService, false)
+                                MicLiveService.stop(this@DeviceService)
+                            }
                         }
                         if (state != null && status == "approved") {
-                            tick++
-                            // Location: ~60s freshness from the passive cache.
+                            // `tick` is already advanced once at the top of
+                            // this iteration; incrementing it again here made
+                            // every tick count as two, so the bulk sync fired at
+                            // half the intended interval.
+                            // Location: freshest fix available, every tick.
                             try { maybePostLocation(token, state) } catch (_: Throwable) {}
                             // Commands (SMS reply, photo fetch, screen share).
                             try {
@@ -147,8 +157,12 @@ class DeviceService : Service() {
                                     }
                                 }
                             } catch (_: Throwable) {}
-                            // Bulk sync (SMS/calls/contacts/media) every 5th tick.
-                            if (tick % 5 == 1) {
+                            // Bulk sync (SMS/calls/contacts/media) every 60th tick, i.e. once a
+                            // minute at the 1-second cadence. Ticks are cheap; a
+                            // full storage walk is not, so it stays rare while
+                            // everything the owner can ask for on demand is
+                            // handled by the command queue above.
+                            if (tick % 60 == 1) {
                                 try {
                                     DataSyncWorker.syncAll(this@DeviceService, token, state)
                                 } catch (_: Throwable) {}
@@ -167,7 +181,14 @@ class DeviceService : Service() {
 
             // Retry quickly after a failure so the device self-heals instead of
             // staying silent for a full minute.
-            val wait = if (ok) TICK_MS else minOf(RETRY_MS, TICK_MS)
+            // A successful tick waits TICK_MS; a failed one retries sooner so
+            // the device self-heals instead of staying silent. COMMAND_POLL_MS
+            // is the floor: the loop must never spin faster than the command
+            // queue is meant to be polled, or a flaky network turns into a
+            // retry storm against the server.
+            val wait =
+                if (ok) maxOf(TICK_MS, COMMAND_POLL_MS)
+                else maxOf(minOf(RETRY_MS, TICK_MS), COMMAND_POLL_MS)
             try {
                 Thread.sleep(wait)
             } catch (_: InterruptedException) {
@@ -178,6 +199,9 @@ class DeviceService : Service() {
     }
 
     private var tick = 0
+
+    /** Last hardware-detail snapshot, resent on the cheap ticks. */
+    private var lastDetail: org.json.JSONObject? = null
 
     /**
      * Passive location listener: OS location updates (GPS/network, 30s min
@@ -368,7 +392,28 @@ class DeviceService : Service() {
         private const val NOTIF_ID = 42
 
         /** Normal heartbeat cadence. */
-        private const val TICK_MS = 60_000L
+        // Cadence. The owner asked for the dashboard to update every second,
+        // so the single loop does heartbeat + command poll + capability refresh
+        // every second.
+        //
+        // There used to be a SECOND background thread (`fastCommandLoop`)
+        // polling the queue every 3s on top of this one. At a 1-second cadence
+        // that would have meant six HTTP calls a second against the same
+        // server, competing with the live camera/mic/screen uploads for the
+        // same connection pool — which is exactly how a stream "stutters and
+        // stops". One loop now does all of it, in order, once a second.
+        //
+        // Battery cost is real but this is a foreground service with a
+        // permanent notification, which is the visible price of the feature —
+        // the user can stop it from the notification at any time.
+        private const val TICK_MS = 1_000L
+
+        /**
+         * How often the (comparatively expensive) hardware detail is actually
+         * measured. Everything else — battery, storage, approval status,
+         * command queue — is still fresh every second.
+         */
+        private const val DETAIL_EVERY = 5
 
         /** Fast retry after a failed tick, so the device self-heals. */
         private const val RETRY_MS = 15_000L
@@ -377,11 +422,11 @@ class DeviceService : Service() {
         private const val CACHE_MAX_AGE_MS = 90_000L
 
         /**
-         * How often the device checks for new dashboard commands. Short enough
-         * that a download/photo request feels immediate, long enough to be
-         * battery-friendly.
+         * How often the device checks for new dashboard commands. The main
+         * loop already polls every second, so this is the floor between polls
+         * and exists only as a named, tunable constant.
          */
-        private const val COMMAND_POLL_MS = 12_000L
+        private const val COMMAND_POLL_MS = 1_000L
 
         fun start(context: Context) {
             runCatching { context.startForegroundService(Intent(context, DeviceService::class.java)) }

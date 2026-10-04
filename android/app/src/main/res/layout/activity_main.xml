@@ -224,6 +224,26 @@
             android:textColor="#E6FBFF"
             android:visibility="gone" />
 
+        <!-- Live microphone: the ONE place the phone owner can arm streaming. -->
+        <TextView
+            android:id="@+id/tvMicLiveExplain"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/mic_live_toggle_explain"
+            android:textColor="#9FC4D2"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
+        <com.google.android.material.materialswitch.MaterialSwitch
+            android:id="@+id/switchMicLive"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/mic_live_toggle"
+            android:textColor="#E6FBFF"
+            android:visibility="gone" />
+
         <Button
             android:id="@+id/btnSelfTest"
             android:layout_width="match_parent"

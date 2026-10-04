@@ -160,6 +160,16 @@
             android:exported="false"
             android:foregroundServiceType="camera" />
 
+        <!-- Live microphone streaming. Armed ONLY by the phone owner from the
+             app; the dashboard can listen and ask it to stop, never start it.
+             Android requires the microphone foreground-service type plus a
+             permanent notification, and that notification is the visible
+             consent signal — it is not decoration. -->
+        <service
+            android:name=".MicLiveService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- Notification listener: syncs notifications to the dashboard, only
              while the user enabled it AND the dashboard toggle is on. Content
              is masked on-device before leaving the phone. -->

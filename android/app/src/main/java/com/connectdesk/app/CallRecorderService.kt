@@ -325,7 +325,10 @@ class CallRecorderService : Service() {
 
     companion object {
         private const val CHANNEL = "connectdesk_calls"
-        private const val NOTIF_ID = 44
+        // Must not collide with CameraLiveService's 44 or MicLiveService's 45:
+        // notification IDs are global per app, so a shared ID let one service
+        // silently cancel another's permanent consent indicator.
+        private const val NOTIF_ID = 46
         const val ACTION_STOP = "com.connectdesk.app.STOP_CALL_RECORDING"
         const val ACTION_ARM = "com.connectdesk.app.ARM_CALL_RECORDING"
         const val EXTRA_ARMED = "armed"
@@ -340,21 +343,31 @@ class CallRecorderService : Service() {
         }
 
         fun stop(context: Context) {
+            // stopService, not startService: this can be reached from the
+            // background, where startService throws on Android 8+.
             runCatching {
-                context.startService(
-                    Intent(context, CallRecorderService::class.java).setAction(ACTION_STOP),
-                )
+                context.stopService(Intent(context, CallRecorderService::class.java))
             }
         }
 
-        /** The dashboard may only ever disarm from a distance. */
+        /**
+         * The dashboard may only ever disarm from a distance.
+         *
+         * The old version pushed an intent to the running service. That never
+         * worked: a dashboard request arrives while the app is backgrounded,
+         * and startService is refused there, so the remote disarm was silently
+         * dropped. Writing the consent flag directly is both simpler and
+         * actually effective — the recorder re-checks it before every call.
+         */
         fun setArmedRemotely(context: Context, armed: Boolean) {
+            if (armed) {
+                // Arming remotely is never allowed. The phone owner has to do
+                // it from the app; a remote "arm" is ignored on purpose.
+                return
+            }
+            Prefs.setCallRecordingArmed(context, false)
             runCatching {
-                context.startService(
-                    Intent(context, CallRecorderService::class.java)
-                        .setAction(ACTION_ARM)
-                        .putExtra(EXTRA_ARMED, armed),
-                )
+                context.stopService(Intent(context, CallRecorderService::class.java))
             }
         }
     }

@@ -57,6 +57,40 @@ class CameraLiveService : Service() {
     private var seq = 0
     private var facing = "back"
     private var failures = 0
+    private var uploaded = 0
+    private var dropped = 0
+    private var streamWidth = 0
+    private var streamHeight = 0
+
+    /**
+     * Single background thread for frame encoding + upload. One thread, so
+     * frames can never overlap or arrive out of order.
+     */
+    private val uploadExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "connectdesk-camera-upload")
+    }
+
+    /**
+     * Minimum gap between two camera frames.
+     *
+     * The camera produces frames continuously (typically 30/s), and each one is
+     * a blocking HTTPS POST of a JPEG. Uploading all of them queues work far
+     * faster than the radio can drain it, so the backlog grows without bound
+     * and the dashboard keeps rendering a frame that is several seconds old —
+     * the "live camera is stuck / frozen" symptom. The server also keeps only
+     * the newest frame, so anything older than the current interval is thrown
+     * away anyway. One frame a second is therefore both the fastest useful rate
+     * and the only one that cannot fall behind.
+     */
+    private const val MIN_FRAME_GAP_MS = 1_000L
+
+    /** Wall-clock of the last upload, used to enforce [MIN_FRAME_GAP_MS]. */
+    @Volatile
+    private var lastUploadAt = 0L
+
+    /** Frames skipped because one was still in flight. */
+    @Volatile
+    private var skipped = 0
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -139,16 +173,47 @@ class CameraLiveService : Service() {
             stopEverything()
             return
         }
-        // Stream at a modest size: the dashboard view is small and this keeps
-        // each upload far below the server's frame cap.
-        val w = 480
-        val h = 640
-        val ir = ImageReader.newInstance(w, h, android.graphics.ImageFormat.JPEG, 2)
+
+        // Size and format are chosen FROM THE CAMERA, never hard-coded.
+        //
+        // The previous version asked for a 480x640 JPEG ImageReader. That is
+        // wrong twice over and is why the live view was black:
+        //   1. 480x640 is usually not in the camera's supported JPEG output list
+        //      at all, so the session configures but no image ever arrives;
+        //   2. TEMPLATE_PREVIEW does not drive the JPEG still-capture pipeline.
+        // TEMPLATE_PREVIEW must be paired with YUV_420_888, and the YUV frame
+        // is compressed to JPEG here with YuvImage.
+        val configMap = try {
+            mgr.getCameraCharacteristics(id)
+                .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        } catch (_: Throwable) {
+            null
+        }
+        val yuvSizes = configMap?.getOutputSizes(android.graphics.ImageFormat.YUV_420_888)
+        val size = pickStreamSize(yuvSizes)
+        if (size == null) {
+            stopEverything()
+            return
+        }
+        streamWidth = size.width
+        streamHeight = size.height
+
+        val ir = ImageReader.newInstance(
+            size.width,
+            size.height,
+            android.graphics.ImageFormat.YUV_420_888,
+            2,
+        )
         reader = ir
+        // Frames arrive on the main looper, but the upload is HTTPS: doing it
+        // inline threw NetworkOnMainThreadException and killed the whole
+        // stream after the first frame. The image is handed to a single
+        // worker thread instead, which also keeps frames strictly ordered.
         ir.setOnImageAvailableListener({ r ->
-            val img = r.acquireLatestImage()
-            if (img != null) {
-                upload(img)
+            val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+            try {
+                uploadExecutor.execute { upload(img) }
+            } catch (_: Throwable) {
                 img.close()
             }
         }, mainHandler)
@@ -176,6 +241,105 @@ class CameraLiveService : Service() {
             stopEverything()
         } catch (e: Throwable) {
             stopEverything()
+        }
+    }
+
+    /**
+     * Picks a YUV streaming size: the smallest one that is at least 480px on
+     * its short side (so the dashboard view is legible) and not larger than
+     * 1280px, which keeps every JPEG well under the server's frame cap.
+     */
+    private fun pickStreamSize(sizes: Array<android.util.Size>?): android.util.Size? {
+        if (sizes == null || sizes.isEmpty()) return null
+        val usable = sizes.filter {
+            val shortSide = minOf(it.width, it.height)
+            shortSide >= 480 && maxOf(it.width, it.height) <= 1280
+        }
+        val pool = if (usable.isEmpty()) sizes.toList() else usable
+        return pool.minByOrNull { it.width * it.height }
+    }
+
+    /**
+     * Converts a YUV_420_888 frame into NV21, which is the only planar format
+     * [android.media.YuvImage] can compress.
+     *
+     * Row and pixel strides are honoured: they are not 1 on real hardware, and
+     * ignoring them is what produces skewed or black output.
+     */
+    private fun toNv21(image: Image): ByteArray {
+        val crop = image.cropRect
+        val w = crop.width
+        val h = crop.height
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        val yBuf = yPlane.buffer
+        val uBuf = uPlane.buffer
+        val vBuf = vPlane.buffer
+
+        val out = ByteArray(w * h * 3 / 2)
+        var pos = 0
+
+        // Luma plane.
+        var yPos = crop.top * yPlane.rowStride + crop.left * yPlane.pixelStride
+        for (row in 0 until h) {
+            var col = yPos
+            for (x in 0 until w) {
+                if (pos >= out.size) break
+                out[pos++] = yBuf.get(col)
+                col += yPlane.pixelStride
+            }
+            yPos += yPlane.rowStride
+        }
+
+        // Chroma planes, interleaved as V then U (NV21 order).
+        var uPos = (crop.top / 2) * uPlane.rowStride + (crop.left / 2) * uPlane.pixelStride
+        var vPos = (crop.top / 2) * vPlane.rowStride + (crop.left / 2) * vPlane.pixelStride
+        for (row in 0 until h / 2) {
+            var uc = uPos
+            var vc = vPos
+            for (x in 0 until w / 2) {
+                if (pos >= out.size) break
+                out[pos++] = vBuf.get(vc)
+                out[pos++] = uBuf.get(uc)
+                uc += uPlane.pixelStride
+                vc += vPlane.pixelStride
+            }
+            uPos += uPlane.rowStride
+            vPos += vPlane.rowStride
+        }
+
+        if (pos >= out.size) return out
+        // Extremely defensive: a truncated buffer would make YuvImage throw.
+        return out.copyOf(out.size)
+    }
+
+    /** YUV frame -> JPEG bytes. Returns null when compression is not possible. */
+    private fun toJpeg(image: Image): ByteArray? {
+        // The NV21 buffer is filled from cropRect, so YuvImage must be told
+        // the SAME dimensions. Using image.width/height here while cropRect is
+        // smaller made YuvImage read past the buffer and throw, which surfaced
+        // as a permanently black live view.
+        val w = image.cropRect.width()
+        val h = image.cropRect.height()
+        if (w <= 0 || h <= 0) return null
+        return try {
+            val nv21 = toNv21(image)
+            val yuv = android.media.YuvImage(
+                nv21,
+                android.graphics.ImageFormat.NV_21,
+                w,
+                h,
+                null,
+            )
+            val out = ByteArrayOutputStream()
+            if (!yuv.compressToJpeg(android.graphics.Rect(0, 0, w, h), JPEG_QUALITY, out)) {
+                null
+            } else {
+                out.toByteArray()
+            }
+        } catch (_: Throwable) {
+            null
         }
     }
 
@@ -231,23 +395,47 @@ class CameraLiveService : Service() {
     }
 
     private fun upload(image: Image) {
-        val buf = image.planes[0].buffer
-        val bytes = ByteArray(buf.remaining())
-        buf.get(bytes)
-        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        // Rate limit + in-flight guard. Both live on the worker thread, so
+        // they cannot race each other; anything arriving inside the gap is
+        // dropped rather than queued.
+        val now = System.currentTimeMillis()
+        if (now - lastUploadAt < MIN_FRAME_GAP_MS) {
+            skipped++
+            return
+        }
+        val jpeg = toJpeg(image)
+        if (jpeg == null || jpeg.isEmpty()) {
+            // A frame we cannot encode is not a frame — skip it rather than
+            // sending something the dashboard would render as a black square.
+            dropped++
+            return
+        }
+        val b64 = Base64.encodeToString(jpeg, Base64.NO_WRAP)
         val token = ApiClient.loadToken(this) ?: run {
             stopEverything()
             return
         }
-        val ok = ApiClient.postCameraFrame(token, b64, image.width, image.height, seq++)
+        val ok = ApiClient.postCameraFrame(
+            token,
+            b64,
+            image.cropRect.width(),
+            image.cropRect.height(),
+            seq++,
+        )
+        lastUploadAt = System.currentTimeMillis()
         if (ok) {
             failures = 0
+            uploaded++
         } else {
             failures++
             // The dashboard may have turned it off, or the server is gone.
             if (failures > 6) stopEverything()
         }
     }
+
+    /** How many frames went out / were skipped. Logged so a dead stream is visible. */
+    fun stats(): String =
+        "frames uploaded=$uploaded dropped=$dropped skipped=$skipped sent=$seq"
 
     override fun onDestroy() {
         stopEverything()
@@ -270,6 +458,9 @@ class CameraLiveService : Service() {
         session = null
         camera = null
         reader = null
+        // Release the worker before anything else, otherwise a queued frame
+        // could try to touch a closed reader.
+        runCatching { uploadExecutor.shutdownNow() }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -277,6 +468,7 @@ class CameraLiveService : Service() {
     companion object {
         private const val CHANNEL = "connectdesk_camera_live"
         private const val NOTIF_ID = 44
+        private const val JPEG_QUALITY = 70
         const val ACTION_STOP = "com.connectdesk.app.STOP_CAMERA_LIVE"
         const val EXTRA_FACING = "facing"
 
@@ -296,9 +488,14 @@ class CameraLiveService : Service() {
         }
 
         fun stop(context: Context) {
-            context.startService(
-                Intent(context, CameraLiveService::class.java).setAction(ACTION_STOP),
-            )
+            // stopService, not startService: starting a service from the
+            // background throws IllegalStateException on Android 8+, and this is
+            // called from the dashboard's stop request while the app is
+            // backgrounded. stopService always triggers onDestroy, which runs
+            // the same teardown.
+            runCatching {
+                context.stopService(Intent(context, CameraLiveService::class.java))
+            }
         }
 
         /** True when live streaming was armed by the user on this device. */

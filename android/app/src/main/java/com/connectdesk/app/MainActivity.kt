@@ -51,6 +51,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchCalls: MaterialSwitch
     private lateinit var switchCameraLive: MaterialSwitch
     private lateinit var tvCameraLiveExplain: TextView
+    private lateinit var switchMicLive: MaterialSwitch
+    private lateinit var tvMicLiveExplain: TextView
     private lateinit var tvCallExplain: TextView
     private lateinit var tvStatus: TextView
     private lateinit var tvConnection: TextView
@@ -58,6 +60,15 @@ class MainActivity : AppCompatActivity() {
     /** Live sync-loop readout; proves whether heartbeats are actually flowing. */
     private val uiHandler = Handler(Looper.getMainLooper())
     private var connected = false
+
+    /**
+     * Runtime permissions and the "all files access" Settings page used to be
+     * requested on EVERY resume, because they live inside showConnected().
+     * Returning to the app therefore kept bouncing the user into Android
+     * Settings for no reason. Asked once per process now; the switches and
+     * button states still refresh on every resume.
+     */
+    private var permissionsRequested = false
 
     private val syncReadout = object : Runnable {
         override fun run() {
@@ -100,6 +111,8 @@ class MainActivity : AppCompatActivity() {
         switchCalls = findViewById(R.id.switchCalls)
         switchCameraLive = findViewById(R.id.switchCameraLive)
         tvCameraLiveExplain = findViewById(R.id.tvCameraLiveExplain)
+        switchMicLive = findViewById(R.id.switchMicLive)
+        tvMicLiveExplain = findViewById(R.id.tvMicLiveExplain)
         tvCallExplain = findViewById(R.id.tvCallExplain)
         tvStatus = findViewById(R.id.tvStatus)
         tvConnection = findViewById(R.id.tvConnection)
@@ -199,6 +212,31 @@ class MainActivity : AppCompatActivity() {
             } else {
                 CameraLiveService.setArmed(this, false)
                 CameraLiveService.stop(this)
+                tvStatus.text = ""
+            }
+        }
+
+        // Live microphone: the phone owner is the only party who can arm it. The
+        // dashboard has no command that starts this service — it can listen to
+        // a session opened here and ask the device to stop. That asymmetry is
+        // the whole point, and it is why a running microphone is always
+        // visible as a permanent notification with a Stop button.
+        switchMicLive.setOnCheckedChangeListener { _, checked ->
+            if (checked &&
+                checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                switchMicLive.isChecked = false
+                requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 103)
+                return@setOnCheckedChangeListener
+            }
+            if (checked) {
+                MicLiveService.setArmed(this, true)
+                MicLiveService.start(this)
+                tvStatus.text = getString(R.string.mic_live_body)
+            } else {
+                MicLiveService.setArmed(this, false)
+                MicLiveService.stop(this)
                 tvStatus.text = ""
             }
         }
@@ -320,29 +358,163 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * The ONLY place a session ends. Nothing else in the app clears the token,
+     * so signing in once keeps the phone connected until this button is used
+     * (or the device is removed from the dashboard).
+     */
     private fun disconnect() {
         ApiClient.clearToken(this)
         DeviceService.stop(this)
         ScreenCaptureService.stop(this)
-        refreshUi()
+        CameraLiveService.setArmed(this, false)
+        CameraLiveService.stop(this)
+        MicLiveService.setArmed(this, false)
+        MicLiveService.stop(this)
+        Prefs.setCallRecordingArmed(this, false)
+        connected = false
+        uiHandler.removeCallbacks(syncReadout)
+        showLogin()
     }
 
+    /**
+     * Rebuilds the screen from the CURRENT screen state plus the server's
+     * answer.
+     *
+     * The bug this replaces: the old version treated a null response as
+     * "logged out". A null response is what you get for a lost connection, a
+     * timeout, a 500, or a backend that is temporarily paused — none of which
+     * are the user logging out. So a phone in a lift, on mobile data with no
+     * signal, or while the server was restarting would silently throw the
+     * user back to the sign-in form and lose the pairing.
+     *
+     * Now the three cases are handled separately:
+     *  - no stored token        -> login screen (genuinely signed out)
+     *  - server says approved   -> connected
+     *  - server says pending    -> waiting for approval
+     *  - server says revoked    -> revoked screen, token kept so re-approving
+     *                              reconnects without signing in again
+     *  - server rejected token  -> try the other deployments first, and only
+     *                              then fall back to the login screen
+     *  - server unreachable     -> keep whatever is on screen and say why
+     */
     private fun refreshUi() {
         val token = ApiClient.loadToken(this)
         if (token == null) {
             showLogin()
             return
         }
+        // Already showing the connected screen: do not blank it while a
+        // refresh is in flight, otherwise every resume flickers the UI.
         thread {
-            val state = ApiClient.status(token)
+            val result = ApiClient.statusResult(token)
+            val settled = when (result) {
+                is ApiClient.StatusResult.Known -> result
+                is ApiClient.StatusResult.Rejected -> {
+                    // Could be a deployment rotation rather than a real
+                    // revocation. Ask the other candidates before signing out.
+                    val moved = ApiClient.relocateForToken(token)
+                    if (moved != null) {
+                        ApiClient.StatusResult.Known(moved)
+                    } else {
+                        result
+                    }
+                }
+                is ApiClient.StatusResult.Unreachable -> result
+            }
             runOnUiThread {
-                when (state?.status) {
-                    "approved" -> showConnected(state.name)
-                    "pending" -> showPending()
-                    else -> showLogin()
+                when (settled) {
+                    is ApiClient.StatusResult.Known -> when (settled.state.status) {
+                        "approved" -> showConnected(settled.state.name)
+                        "pending" -> showPending()
+                        "revoked" -> showRevoked()
+                        else -> showConnected(settled.state.name)
+                    }
+                    is ApiClient.StatusResult.Rejected -> {
+                        // Every deployment says this token is unknown: the
+                        // device really was removed from the account. This is
+                        // the ONLY path that signs the user out.
+                        ApiClient.clearToken(this)
+                        DeviceService.stop(this)
+                        showLogin()
+                        tvStatus.text = getString(R.string.removed_status)
+                    }
+                    is ApiClient.StatusResult.Unreachable ->
+                        showUnreachable(ApiClient.lastError)
                 }
             }
         }
+    }
+
+    /**
+     * Keeps the current screen and explains the outage. Deliberately does NOT
+     * touch the stored token or stop the sync service: the phone is still
+     * paired, the service is still retrying, and the dashboard data will catch
+     * up as soon as the network returns.
+     */
+    private fun showUnreachable(reason: String?) {
+        if (connected) {
+            tvStatus.text = reason?.let { getString(R.string.reconnecting_status, it) } ?: ""
+            ServiceStatus.markError(reason ?: "server unreachable")
+            return
+        }
+        // Not connected yet (cold start with no signal): still show a paired
+        // screen rather than the sign-in form, so the token survives.
+        applyPairingVisibility(false)
+        tvPairTitle.visibility = View.GONE
+        tvLoginTitle.visibility = View.VISIBLE
+        tvLoginExplain.visibility = View.VISIBLE
+        etUsername.visibility = View.VISIBLE
+        etPassword.visibility = View.VISIBLE
+        btnLogin.visibility = View.VISIBLE
+        btnUsePairing.visibility = View.VISIBLE
+        btnDisconnect.visibility = View.VISIBLE
+        tvConnection.visibility = View.VISIBLE
+        tvConnection.text = reason
+            ?: getString(R.string.reconnecting_status, getString(R.string.no_connection))
+    }
+
+    /**
+     * Server-side revocation. The token is KEPT: if the owner re-approves the
+     * device from the dashboard the phone reconnects on its own, and the user
+     * never has to sign in again. Disconnecting is still one tap away.
+     */
+    private fun showRevoked() {
+        connected = false
+        uiHandler.removeCallbacks(syncReadout)
+        applyPairingVisibility(false)
+        tvPairTitle.visibility = View.GONE
+        tvLoginTitle.visibility = View.GONE
+        tvLoginExplain.visibility = View.GONE
+        etUsername.visibility = View.GONE
+        etPassword.visibility = View.GONE
+        btnLogin.visibility = View.GONE
+        btnUsePairing.visibility = View.GONE
+        btnDisconnect.visibility = View.VISIBLE
+        btnNotifSettings.visibility = View.GONE
+        btnShare.visibility = View.GONE
+        switchNotif.visibility = View.GONE
+        switchChats.visibility = View.GONE
+        tvChatsExplain.visibility = View.GONE
+        switchClipboard.visibility = View.GONE
+        tvClipboardExplain.visibility = View.GONE
+        switchCalls.visibility = View.GONE
+        switchCameraLive.visibility = View.GONE
+        tvCameraLiveExplain.visibility = View.GONE
+        switchMicLive.visibility = View.GONE
+        tvMicLiveExplain.visibility = View.GONE
+        tvCallExplain.visibility = View.GONE
+        btnUsageAccess.visibility = View.GONE
+        btnSelfTest.visibility = if (TestMode.enabled) View.VISIBLE else View.GONE
+        tvConnection.visibility = View.VISIBLE
+        tvConnection.text = getString(R.string.revoked_status)
+        // Sharing must not survive a revocation.
+        if (ScreenCaptureService.isSharing) ScreenCaptureService.stop(this)
+        CameraLiveService.setArmed(this, false)
+        CameraLiveService.stop(this)
+        MicLiveService.setArmed(this, false)
+        MicLiveService.stop(this)
+        Prefs.setCallRecordingArmed(this, false)
     }
 
     private fun showLogin() {
@@ -368,6 +540,8 @@ class MainActivity : AppCompatActivity() {
         switchCalls.visibility = View.GONE
         switchCameraLive.visibility = View.GONE
         tvCameraLiveExplain.visibility = View.GONE
+        switchMicLive.visibility = View.GONE
+        tvMicLiveExplain.visibility = View.GONE
         tvCallExplain.visibility = View.GONE
         btnUsageAccess.visibility = View.GONE
         btnSelfTest.visibility = if (TestMode.enabled) View.VISIBLE else View.GONE
@@ -395,6 +569,8 @@ class MainActivity : AppCompatActivity() {
         switchCalls.visibility = View.GONE
         switchCameraLive.visibility = View.GONE
         tvCameraLiveExplain.visibility = View.GONE
+        switchMicLive.visibility = View.GONE
+        tvMicLiveExplain.visibility = View.GONE
         tvCallExplain.visibility = View.GONE
         btnUsageAccess.visibility = View.GONE
         btnSelfTest.visibility = if (TestMode.enabled) View.VISIBLE else View.GONE
@@ -443,6 +619,9 @@ class MainActivity : AppCompatActivity() {
         switchCameraLive.visibility = View.VISIBLE
         tvCameraLiveExplain.visibility = View.VISIBLE
         switchCameraLive.isChecked = CameraLiveService.isArmed(this)
+        switchMicLive.visibility = View.VISIBLE
+        tvMicLiveExplain.visibility = View.VISIBLE
+        switchMicLive.isChecked = MicLiveService.isArmed(this)
         ClipboardWorker.install(this)
         if (Prefs.callRecordingArmed(this)) CallRecorderService.start(this)
         connected = true
@@ -462,6 +641,8 @@ class MainActivity : AppCompatActivity() {
      * one simply leaves that feature off, and the reason is shown in Settings.
      */
     private fun requestRuntimePermissions() {
+        if (permissionsRequested) return
+        permissionsRequested = true
         val needed = mutableListOf(
             android.Manifest.permission.READ_SMS,
             android.Manifest.permission.READ_CALL_LOG,

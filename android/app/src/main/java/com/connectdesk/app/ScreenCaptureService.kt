@@ -54,6 +54,23 @@ class ScreenCaptureService : Service() {
     private var intervalMs = 1000L
     private var staleStreak = 0
 
+    /**
+     * Frames skipped because the last upload had not finished yet.
+     *
+     * A frame is captured far faster than 1/s, and each upload is a blocking
+     * HTTPS POST. Uploading every captured frame therefore queued work faster
+     * than the connection could drain it, so the queue grew without bound and
+     * the view the user was watching fell further and further behind — the
+     * classic "live view freezes" symptom. One upload at a time, and any frame
+     * that arrives while one is in flight is simply skipped, keeps latency at
+     * one frame instead of an ever-growing backlog.
+     */
+    private val uploading = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Wall-clock of the last completed upload, for the fresh-frame check. */
+    @Volatile
+    private var lastUploadAt = 0L
+
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             // User pressed "Stop" on the system cast dialog — honor it.
@@ -83,7 +100,10 @@ class ScreenCaptureService : Service() {
         }
 
         width = intent.getIntExtra(EXTRA_WIDTH, 720).coerceIn(360, 1080)
-        intervalMs = intent.getIntExtra(EXTRA_INTERVAL_MS, 1000).coerceIn(400, 5000).toLong()
+// The dashboard asks for 1 second. The floor is now 300ms so a fast
+        // connection can go quicker, and the ceiling is unchanged at 5s to
+        // stop a client from asking for a frame flood.
+        intervalMs = intent.getIntExtra(EXTRA_INTERVAL_MS, 1000).coerceIn(300, 5000).toLong()
 
         startAsForeground()
 
@@ -156,40 +176,50 @@ class ScreenCaptureService : Service() {
     /** Returns true when a frame reached the server (or was accepted). */
     private fun captureAndUpload(): Boolean {
         val reader = imageReader ?: return false
-        val image: Image = try {
-            reader.acquireLatestImage() ?: return true // nothing new; keep going
-        } catch (_: Exception) {
-            return false
-        }
-        val jpeg = try {
-            imageToJpeg(image)
-        } catch (_: Exception) {
-            null
-        } finally {
-            try {
-                image.close()
+        // Never start a second upload while one is in flight (see `uploading`).
+        if (!uploading.compareAndSet(false, true)) return true
+        try {
+            val image: Image = try {
+                reader.acquireLatestImage() ?: return true // nothing new; keep going
             } catch (_: Exception) {
+                return false
             }
-        }
-        val bytes = jpeg ?: return false
-        if (bytes.size > MAX_JPEG_BYTES) return false // skip oversized frame
-        val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        val result = ApiClient.pushScreenFrame(
-            token ?: return false,
-            ++seq,
-            reader.width,
-            reader.height,
-            b64,
-        )
-        // Server says the session is gone (owner stopped it / timed out) or
-        // the capability was turned off: stop capturing immediately.
-        return when (result) {
-            "stored" -> true
-            "no_session", "capability_off" -> {
-                stopSelf()
-                false
+            val jpeg = try {
+                imageToJpeg(image)
+            } catch (_: Exception) {
+                null
+            } finally {
+                try {
+                    image.close()
+                } catch (_: Exception) {
+                }
             }
-            else -> false // transient error; retry next tick
+            val bytes = jpeg ?: return false
+            if (bytes.size > MAX_JPEG_BYTES) return false // skip oversized frame
+            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+            val result = ApiClient.pushScreenFrame(
+                token ?: return false,
+                ++seq,
+                reader.width,
+                reader.height,
+                b64,
+            )
+            lastUploadAt = System.currentTimeMillis()
+            // Server says the session is gone (owner stopped it / timed out) or
+            // the capability was turned off: stop capturing immediately.
+            return when (result) {
+                "stored" -> true
+                "no_session", "capability_off" -> {
+                    stopSelf()
+                    false
+                }
+                else -> false // transient error; retry next tick
+            }
+        } finally {
+            // Released in a finally so a single failure can never wedge the
+            // stream: if the flag were left set, every later frame would be
+            // skipped as "upload in flight" and the view would freeze forever.
+            uploading.set(false)
         }
     }
 
@@ -264,6 +294,9 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         running = false
+        // The share flag must follow the real service state, otherwise the app
+        // keeps showing "Stop sharing" for a session that already ended.
+        isSharing = false
         mainHandler.removeCallbacksAndMessages(null)
         try {
             virtualDisplay?.release()
@@ -318,9 +351,12 @@ class ScreenCaptureService : Service() {
         }
 
         fun stop(context: Context) {
-            context.startService(
-                Intent(context, ScreenCaptureService::class.java).setAction(ACTION_STOP),
-            )
+            // stopService rather than startService: startService from the
+            // background throws IllegalStateException on Android 8+, and this
+            // runs from the dashboard's stop request and from the revoked path.
+            runCatching {
+                context.stopService(Intent(context, ScreenCaptureService::class.java))
+            }
             isSharing = false
         }
     }

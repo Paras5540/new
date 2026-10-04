@@ -71,6 +71,19 @@ object ApiClient {
     @Volatile
     var lastError: String? = null
 
+    /**
+     * True when the last [post] failed because we never got an HTTP answer
+     * (no internet, DNS, timeout, TLS), as opposed to the server answering
+     * with a non-2xx status.
+     *
+     * This distinction is the whole reason the app no longer logs itself out
+     * by accident: "could not ask the server" and "the server says this token
+     * is not valid" are completely different events and must never be
+     * collapsed into the same `null`.
+     */
+    @Volatile
+    var lastErrorWasNetwork: Boolean = false
+
     private val json = "application/json; charset=utf-8".toMediaType()
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -90,6 +103,7 @@ object ApiClient {
     }
 
     private fun post(path: String, body: JSONObject): JSONObject? {
+        lastErrorWasNetwork = false
         val request = Request.Builder()
             .url("$BASE_URL$path")
             .post(body.toString().toRequestBody(json))
@@ -142,6 +156,7 @@ object ApiClient {
                 }
             }
             lastError = "No connection to the ConnectDesk server — check internet"
+            lastErrorWasNetwork = true
             null
         }
     }
@@ -196,9 +211,7 @@ object ApiClient {
         val appActivity: Boolean = false,
     )
 
-    fun status(token: String): DeviceState? {
-        val body = JSONObject().put("deviceToken", token)
-        val resp = post("/api/device/status", body) ?: return null
+    private fun parseState(resp: JSONObject): DeviceState {
         val caps = resp.optJSONObject("capabilities") ?: JSONObject()
         return DeviceState(
             status = resp.optString("status"),
@@ -216,6 +229,75 @@ object ApiClient {
             appActivity = caps.optBoolean("app_activity", false),
         )
     }
+
+    /**
+     * Outcome of asking the server about this token.
+     *
+     * The old code returned a single nullable `DeviceState`, which made a lost
+     * connection indistinguishable from a rejected token — and the UI treated
+     * both as "logged out". These three cases are kept apart on purpose.
+     */
+    sealed class StatusResult {
+        /** The server answered and this token is valid. */
+        data class Known(val state: DeviceState) : StatusResult()
+
+        /**
+         * The server answered and does not know this token. Only THIS may
+         * ever end a session.
+         */
+        object Rejected : StatusResult()
+
+        /**
+         * No usable answer: offline, timeout, 5xx, or a deployment that is
+         * currently paused. The session must be left exactly as it is.
+         */
+        object Unreachable : StatusResult()
+    }
+
+    fun statusResult(token: String): StatusResult {
+        val body = JSONObject().put("deviceToken", token)
+        val resp = post("/api/device/status", body)
+            ?: return if (lastErrorWasNetwork) {
+                StatusResult.Unreachable
+            } else {
+                StatusResult.Rejected
+            }
+        if (resp.has("error")) return StatusResult.Rejected
+        val state = parseState(resp)
+        if (state.status.isEmpty()) return StatusResult.Unreachable
+        return StatusResult.Known(state)
+    }
+
+    /**
+     * Asks every candidate deployment whether it recognises this token.
+     *
+     * A dev -> production deployment switch is indistinguishable from a real
+     * logout on the wire: the other deployment simply answers "Unknown device
+     * token" for a token that is perfectly valid. Before treating that as the
+     * end of the session, all candidates are asked, and if one of them knows
+     * the token it becomes the active deployment and the session continues.
+     */
+    fun relocateForToken(token: String): DeviceState? {
+        val ctx = appContext ?: return null
+        val original = Backend.active
+        for (candidate in Backend.candidates) {
+            if (candidate == BASE_URL) continue
+            Backend.setActive(ctx, candidate)
+            val resp = post("/api/device/status", JSONObject().put("deviceToken", token))
+            if (resp != null && !resp.has("error") && resp.optString("status").isNotEmpty()) {
+                return parseState(resp) // candidate stays active
+            }
+        }
+        if (original != null) Backend.setActive(ctx, original)
+        return null
+    }
+
+    /**
+     * Convenience wrapper used by the background services, which do not care
+     * *why* a status call failed — only whether the server said anything.
+     */
+    fun status(token: String): DeviceState? =
+        (statusResult(token) as? StatusResult.Known)?.state
 
     fun heartbeat(token: String, batteryPct: Int?, storageUsedMb: Long?, storageTotalMb: Long?): String? {
         val body = JSONObject().put("deviceToken", token)
@@ -528,6 +610,30 @@ object ApiClient {
      * frames are transient. The server keeps only the newest frame per
      * device, so streaming a live camera does not fill storage.
      */
+    /**
+     * POST /api/device/mic/frame — one live microphone clip.
+     *
+     * The clip is a self-contained WAV the dashboard can play as-is. A
+     * `no_session` answer means the phone owner stopped sharing; the caller
+     * treats it as a normal (non-fatal) result and the service shuts the
+     * microphone down after a few of those in a row.
+     */
+    fun postMicFrame(
+        token: String,
+        seq: Int,
+        dataB64: String,
+        durationMs: Long,
+    ): Boolean {
+        val body = JSONObject()
+            .put("deviceToken", token)
+            .put("seq", seq)
+            .put("dataB64", dataB64)
+            .put("durationMs", durationMs)
+        val resp = post("/api/device/mic/frame", body) ?: return false
+        val s = resp.optString("status")
+        return s == "stored" || s == "no_session"
+    }
+
     fun postCameraFrame(
         token: String,
         dataB64: String,

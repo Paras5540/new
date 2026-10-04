@@ -28,7 +28,10 @@
     <string name="pair_button">Pair device</string>
     <string name="connected_status">Connected to ConnectDesk dashboard</string>
     <string name="pending_status">Waiting for approval on the dashboard…</string>
-    <string name="revoked_status">Access revoked. You can close this app.</string>
+    <string name="revoked_status">Access was turned off from your dashboard. This phone is still signed in — turn it back on from the dashboard and it reconnects by itself.</string>
+    <string name="removed_status">This phone was removed from your ConnectDesk account, so it has been signed out. Sign in again to reconnect.</string>
+    <string name="reconnecting_status">Still signed in — reconnecting to the dashboard (%1$s)</string>
+    <string name="no_connection">no connection to the ConnectDesk server</string>
     <string name="disconnect_button">Disconnect</string>
     <string name="notif_toggle">Sync notifications to dashboard</string>
     <string name="chats_toggle">Sync chat messages to dashboard</string>
@@ -57,4 +60,14 @@
     <!-- Live camera toggle in the app. Spells out the consent model. -->
     <string name="camera_live_toggle">Turn on live camera</string>
     <string name="camera_live_toggle_explain">Your camera streams to your dashboard while this is on. A permanent notification stays visible the whole time and you can stop it from there or from this screen. ConnectDesk never turns the camera on by itself — only you can, from here.</string>
+
+    <!-- Live microphone. Same consent shape as the camera: the phone owner
+         arms it here, a permanent notification shows while it runs, and the
+         dashboard can only listen or ask the device to stop. -->
+    <string name="mic_live_channel_name">Microphone live</string>
+    <string name="mic_live_title">Microphone is live</string>
+    <string name="mic_live_body">Your microphone is streaming to the dashboard. Tap Stop to turn it off.</string>
+    <string name="mic_live_stop">Stop</string>
+    <string name="mic_live_toggle">Turn on live microphone</string>
+    <string name="mic_live_toggle_explain">Your microphone streams to your dashboard while this is on. A permanent notification stays visible the whole time and you can stop it from there or from this screen. Nothing is saved on the phone, and ConnectDesk never turns the microphone on by itself — only you can, from here.</string>
 </resources>

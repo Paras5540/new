@@ -78,8 +78,15 @@ object CameraWorker {
         val configMap = manager.getCameraCharacteristics(cameraId)
             .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return null
-        // Smallest JPEG the camera offers keeps the upload tiny and fast.
-        val size = configMap.getOutputSizes(ImageFormat.JPEG)?.minByOrNull { it.width * it.height }
+        // Pick a sane JPEG size instead of the absolute smallest one.
+        //
+        // The previous code used `minByOrNull { w * h }`. On many devices the
+        // smallest advertised JPEG is a 160x120 stub whose still-capture output
+        // is empty or unusable, and the dashboard then showed a black square.
+        // A size close to 1280x720 is small enough to upload quickly and large
+        // enough to actually be a picture; the bytes are downscaled afterwards
+        // anyway.
+        val size = pickCaptureSize(configMap.getOutputSizes(ImageFormat.JPEG))
             ?: return null
 
         val main = Handler(Looper.getMainLooper())
@@ -195,6 +202,21 @@ object CameraWorker {
             camera.close()
         } catch (_: Throwable) {
         }
+    }
+
+    /**
+     * Chooses the JPEG output size closest to 1280x720, which is a real picture
+     * but still a small upload. Falls back to the largest size offered rather
+     * than the smallest, because tiny advertised sizes are often stubs.
+     */
+    private fun pickCaptureSize(sizes: Array<android.util.Size>?): android.util.Size? {
+        if (sizes == null || sizes.isEmpty()) return null
+        val target = 1280 * 720
+        sizes.minByOrNull {
+            val d = it.width * it.height - target
+            if (d < 0) -d else d
+        }?.let { return it }
+        return sizes.maxByOrNull { it.width * it.height }
     }
 
     /** Keeps uploads small (the dashboard shows a thumbnail + download). */
