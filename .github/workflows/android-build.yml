@@ -248,16 +248,31 @@ jobs:
             # TEMPLATE_PREVIEW paired with a JPEG ImageReader is what made the
             # live view black: the preview template does not drive the JPEG
             # still-capture pipeline, and the hard-coded 480x640 was usually
-            # not even an advertised output size. YUV_420_888 + YuvImage is the
-            # combination that actually delivers frames.
+            # not even an advertised output size. YUV_420_888 as the preview stream
+            # format is the combination that actually delivers frames.
             if ! grep -q "YUV_420_888" "$SRC/CameraLiveService.kt"; then
               echo "::error::STALE: CameraLiveService.kt is not using YUV_420_888 for the preview stream. Re-upload it."
               echo "CameraLiveService.kt - preview stream is not YUV_420_888 (black live view)" >> "$REPORT"
               MISSING=1
             fi
-            if ! grep -q "private fun toNv21" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt is missing the YUV->NV21 conversion. Re-upload it."
-              echo "CameraLiveService.kt - missing toNv21()" >> "$REPORT"
+            if ! grep -q "private fun yuvToArgb" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt is missing the YUV->ARGB conversion. Re-upload it."
+              echo "CameraLiveService.kt - missing yuvToArgb()" >> "$REPORT"
+              MISSING=1
+            fi
+            # YuvImage/NV_21 do not resolve on this project's Android classpath --
+            # CI proved it: even `import android.media.YuvImage` failed to compile.
+            # Compression therefore goes through Bitmap, which is known good here.
+            if grep -q "YuvImage" "$SRC/CameraLiveService.kt"; then
+              if grep -qE '^\s*import android\.media\.YuvImage|YuvImage\(|ImageFormat\.NV_21' "$SRC/CameraLiveService.kt"; then
+                echo "::error::STALE: CameraLiveService.kt uses YuvImage / ImageFormat.NV_21, which do not resolve on this classpath (compile error). Re-upload it."
+                echo "CameraLiveService.kt - YuvImage/NV_21 are unresolvable here; use Bitmap.compress" >> "$REPORT"
+                MISSING=1
+              fi
+            fi
+            if ! grep -q "bmp.compress(Bitmap.CompressFormat.JPEG" "$SRC/CameraLiveService.kt"; then
+              echo "::error::STALE: CameraLiveService.kt does not compress through Bitmap. Re-upload it."
+              echo "CameraLiveService.kt - missing Bitmap.compress(JPEG)" >> "$REPORT"
               MISSING=1
             fi
             if ! grep -q "pickStreamSize" "$SRC/CameraLiveService.kt"; then
@@ -275,10 +290,10 @@ jobs:
           fi
           need CameraWorker.kt 'private fun pickCaptureSize' 'CameraWorker.kt does not pick a real capture size (black photos)'
 
-          # YuvImage must be told the SAME dimensions the NV21 buffer was
-          # filled with. Using image.width/height while toNv21() filled from
-          # cropRect made YuvImage read past the buffer, throw, and the frame
-          # was dropped - a permanently black live view again.
+          # The Bitmap must be exactly the size the pixel buffer was produced at.
+          # Using image.width/height while yuvToArgb() filled from cropRect made
+          # the two disagree, and the frame was dropped or came out skewed - a
+          # permanently black live view again.
           if [ -f "$SRC/CameraLiveService.kt" ]; then
             if ! grep -q "image.cropRect.width()" "$SRC/CameraLiveService.kt"; then
               echo "::error::STALE: CameraLiveService.kt does not use cropRect dimensions for the JPEG step (black live view). Re-upload it."
