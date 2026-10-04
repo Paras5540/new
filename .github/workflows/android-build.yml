@@ -451,8 +451,22 @@ jobs:
             # `newInstance(` to its closing paren) and the last number in it is
             # the buffer count. That works for both the multi-line and
             # single-line spellings.
+            #
+            # The `(\([^)]*\)|[^()])*` group tolerates ONE level of nesting
+            # inside the arguments, so a call spelled
+            # `newInstance(w, h, fmt, MAX(n))` is read as one whole call
+            # instead of being truncated at the inner paren.
+            #
+            # This used to be an awk state machine. awk rejected the program
+            # outright (`awk: 1: unexpected character '\'`) and the pipeline
+            # produced nothing, so `bufs` came back EMPTY for every source --
+            # the correct one included -- and this check reported STALE on
+            # good code. The first CI run failed on the FIXED file for exactly
+            # that reason. A guard that can never report success is not a
+            # guard; it is a wall.
             bufs=$(CODE "$SRC/CameraLiveService.kt" \
-              | awk '/ImageReader\.newInstance\(/{f=1} f{print} f&&\)/{exit}' \
+              | tr '\n' ' ' \
+              | grep -oE 'ImageReader\.newInstance\((\([^)]*\)|[^()])*\)' \
               | grep -oE '[0-9]+' | tail -1)
             if [ "$bufs" != "3" ]; then
               echo "::error::STALE: CameraLiveService.kt ImageReader maxImages is '${bufs:-none}' (must be 3). Two leaves no headroom while a frame is being encoded and the reader overflows, killing the app. Re-upload it."
