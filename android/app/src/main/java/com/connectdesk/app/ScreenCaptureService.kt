@@ -99,11 +99,14 @@ class ScreenCaptureService : Service() {
             return START_NOT_STICKY
         }
 
-        width = intent.getIntExtra(EXTRA_WIDTH, 720).coerceIn(360, 1080)
+        // `intent` is a nullable parameter of onStartCommand, so these have to
+        // be safe calls. A null intent (the service being restarted) still has
+        // to produce sane defaults rather than crash here.
+        width = intent?.getIntExtra(EXTRA_WIDTH, 720)?.coerceIn(360, 1080) ?: 720
 // The dashboard asks for 1 second. The floor is now 300ms so a fast
         // connection can go quicker, and the ceiling is unchanged at 5s to
         // stop a client from asking for a frame flood.
-        intervalMs = intent.getIntExtra(EXTRA_INTERVAL_MS, 1000).coerceIn(300, 5000).toLong()
+        intervalMs = intent?.getIntExtra(EXTRA_INTERVAL_MS, 1000)?.coerceIn(300, 5000)?.toLong() ?: 1000L
 
         startAsForeground()
 
@@ -400,7 +403,7 @@ class ScreenCaptureService : Service() {
             val p = grantedProjection
             grantedProjection = null
             try {
-                p?.unregisterCallback(projectionCallback)
+                p?.unregisterCallback(projectionStopCallback)
             } catch (_: Exception) {
             }
             try {

@@ -195,11 +195,21 @@ class CameraLiveService : Service() {
         val size = pickStreamSize(yuvSizes)
         if (size == null) {
             // No YUV output at all is unusual but legal; fall back to the
-            // smallest advertised size of any format rather than shutting the
-            // camera down, so the owner still gets a picture.
-            val anySize = configMap?.outputSizes?.values
-                ?.filter { it != null }
-                ?.flatten()
+            // smallest advertised JPEG size rather than shutting the camera
+            // down, so the owner still gets a picture.
+            //
+            // `StreamConfigurationMap` exposes `getOutputSizes(int format)` and
+            // `getOutputSizes(Class)` as FUNCTIONS -- Kotlin does not turn a
+            // Java getter into a property, so `configMap.outputSizes` is an
+            // unresolved reference. That is what the first CI run died on
+            // (CameraLiveService.kt:200:38), and the three "Unresolved
+            // reference: it" errors right after were the same cascade: with
+            // `.outputSizes` gone the `?.filter { it != null }` chain had no
+            // receiver either.
+            //
+            // JPEG is the right format to fall back to: every camera that can
+            // produce a picture advertises a JPEG output size.
+            val anySize = configMap?.getOutputSizes(ImageFormat.JPEG)
                 ?.minByOrNull { it.width * it.height }
             if (anySize == null) {
                 stopEverything()
