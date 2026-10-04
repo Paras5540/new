@@ -82,15 +82,19 @@ class DeviceService : Service() {
                 // every few seconds anyway.
                 tick++
                 val detailed = tick % DETAIL_EVERY == 1
+                // Bind to a local val first: `lastDetail` is a mutable property,
+                // so Kotlin refuses to smart-cast it to non-null in the else
+                // branch even though the null check above guarantees it.
+                val cachedDetail = lastDetail
                 val detailJson =
-                    if (detailed || lastDetail == null) {
+                    if (detailed || cachedDetail == null) {
                         val fresh = DeviceDetailWorker.toJson(
                             DeviceDetailWorker.collect(this@DeviceService),
                         )
                         lastDetail = fresh
                         fresh
                     } else {
-                        lastDetail
+                        cachedDetail
                     }
                 val battery = batteryPct()
                 val storage = storageMb()

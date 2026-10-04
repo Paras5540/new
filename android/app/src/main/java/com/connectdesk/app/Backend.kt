@@ -25,17 +25,22 @@ object Backend {
     private const val KEY_URL = "backendUrl"
 
     /**
-     * Ordered candidates. `preferred` wins while healthy; the others are
+     * Ordered candidates. `active` wins while healthy; the others are
      * fallbacks so a deployment switch does not require a new APK.
      *
-     * ORDER MATTERS. The dashboard creates its pairing code on
-     * `valuable-goldfish-43` (that is the deployment the web build resolves
-     * to), so the device MUST try that one first. When `admired-nightingale-732`
-     * was listed first the phone asked a DIFFERENT deployment for the code,
-     * never found it, and answered the user with a misleading
+     * ORDER MATTERS, because the pairing code is created on ONE deployment: the
+     * device must ask that same deployment for it. Asking a different one
+     * never finds the code and answers the user with a misleading
      * "Invalid pairing code" for a code that was perfectly valid.
+     *
+     * `blessed-goat-500` is FIRST because that is the deployment `convex dev`
+     * actually pushes to, so it is the one carrying every current function
+     * (mic frames, blob streaming). `valuable-goldfish-43` is still listed, but
+     * it is PAUSED, so [resolve] skips it and lands here instead — the phone
+     * therefore keeps working without any APK change.
      */
     var candidates: List<String> = listOf(
+        "https://blessed-goat-500.convex.site",
         "https://valuable-goldfish-43.convex.site",
         "https://admired-nightingale-732.convex.site",
     )

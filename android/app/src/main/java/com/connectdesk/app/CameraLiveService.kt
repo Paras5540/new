@@ -13,8 +13,11 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.graphics.ImageFormat
+import android.graphics.Rect
 import android.media.Image
 import android.media.ImageReader
+import android.media.YuvImage
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -82,7 +85,7 @@ class CameraLiveService : Service() {
      * away anyway. One frame a second is therefore both the fastest useful rate
      * and the only one that cannot fall behind.
      */
-    private const val MIN_FRAME_GAP_MS = 1_000L
+    private val MIN_FRAME_GAP_MS = 1_000L
 
     /** Wall-clock of the last upload, used to enforce [MIN_FRAME_GAP_MS]. */
     @Volatile
@@ -268,8 +271,8 @@ class CameraLiveService : Service() {
      */
     private fun toNv21(image: Image): ByteArray {
         val crop = image.cropRect
-        val w = crop.width
-        val h = crop.height
+        val w = crop.width()
+        val h = crop.height()
         val yPlane = image.planes[0]
         val uPlane = image.planes[1]
         val vPlane = image.planes[2]
@@ -325,15 +328,15 @@ class CameraLiveService : Service() {
         if (w <= 0 || h <= 0) return null
         return try {
             val nv21 = toNv21(image)
-            val yuv = android.media.YuvImage(
+            val yuv = YuvImage(
                 nv21,
-                android.graphics.ImageFormat.NV_21,
+                ImageFormat.NV_21,
                 w,
                 h,
                 null,
             )
             val out = ByteArrayOutputStream()
-            if (!yuv.compressToJpeg(android.graphics.Rect(0, 0, w, h), JPEG_QUALITY, out)) {
+            if (!yuv.compressToJpeg(Rect(0, 0, w, h), JPEG_QUALITY, out)) {
                 null
             } else {
                 out.toByteArray()

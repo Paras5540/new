@@ -125,7 +125,7 @@ class MicLiveService : Service() {
     @SuppressLint("MissingPermission")
     private fun openRecorder(): AudioRecord? {
         if (!hasPermission()) return null
-        val min = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
+        val min = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)
         if (min <= 0) return null
         val bufferBytes = maxOf(min * 2, CLIP_SAMPLES * 2 * 2)
         return try {
@@ -133,7 +133,7 @@ class MicLiveService : Service() {
                 AudioRecord(
                     MediaRecorder.AudioSource.MIC,
                     SAMPLE_RATE,
-                    CHANNEL,
+                    CHANNEL_IN,
                     ENCODING,
                     bufferBytes,
                 )
@@ -239,10 +239,10 @@ class MicLiveService : Service() {
         ascii("fmt ")
         le32(16) // PCM chunk size
         le16(1) // format = PCM
-        le16(1) // channels = mono
+        le16(CHANNEL_COUNT) // channels = mono
         le32(SAMPLE_RATE)
-        le32(SAMPLE_RATE * CHANNELS * 2) // byte rate
-        le16(CHANNELS * 2) // block align
+        le32(SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNEL_COUNT) // byte rate
+        le16(BYTES_PER_SAMPLE * CHANNEL_COUNT) // block align
         le16(16) // bits per sample
         ascii("data")
         le32(dataLen)
@@ -283,7 +283,22 @@ class MicLiveService : Service() {
         private const val CHANNEL = "connectdesk_mic_live"
         private const val NOTIF_ID = 45
         private const val SAMPLE_RATE = 16000
-        private const val CHANNELS = 1
+
+        /**
+         * The raw capture channel count.
+         *
+         * This is deliberately NOT [CHANNEL]: `CHANNEL` is the notification
+         * channel *id* (a String used for the foreground-service notification),
+         * while AudioRecord needs the integer `AudioFormat.CHANNEL_IN_*`.
+         * Passing the id to AudioRecord does not compile.
+         */
+        private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
+
+        /** Channel count written into the WAV header: mono. */
+        private const val CHANNEL_COUNT = 1
+
+        /** Bytes per sample for `ENCODING_PCM_16BIT`: 2. */
+        private const val BYTES_PER_SAMPLE = 2
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
         private const val CLIP_SAMPLES = SAMPLE_RATE // 1 second per clip
 
