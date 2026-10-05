@@ -256,7 +256,7 @@ jobs:
             # never caught it - only a count does.
             n=$(grep -c "switchCameraLive.isChecked = CameraLiveService.isArmed(this)" "$SRC/MainActivity.kt" || true)
             if [ "$n" -gt 1 ]; then
-              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload it."
+              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload MainActivity.kt."
               echo "MainActivity.kt - camera-live 'connected' block repeated $n times (expected 1)" >> "$REPORT"
               MISSING=1
             fi
@@ -373,7 +373,7 @@ jobs:
             MISSING=1
           fi
           if [ -f "$MANIFEST" ] && ! grep -A3 'android:name="\.CameraLiveService"' "$MANIFEST" | grep -q 'foregroundServiceType="camera"'; then
-            echo "::error::STALE: the CameraLiveService entry does not declare foregroundServiceType=\"camera\". Android refuses to start the service without it. Re-upload the manifest."
+            echo "::error::STALE: the CameraLiveService entry does not declare foregroundServiceType=\"camera\". Android refuses to start the service without it, so live camera would never start. Re-upload the manifest."
             echo "AndroidManifest.xml - CameraLiveService foregroundServiceType missing" >> "$REPORT"
             MISSING=1
           fi
