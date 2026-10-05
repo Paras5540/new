@@ -368,17 +368,28 @@ object AppUsageWorker {
         labels: Map<String, String>,
         usage: DayUsage,
     ): JSONArray {
-        val ordered = installed.sortedByDescending {
-            val pkg = it.packageName ?: ""
-            val ms = usage.foregroundMs[pkg] ?: 0L
-            // Used beats unused; within each group, the heaviest user first.
-            // `launchCount` breaks ties so an app opened often but briefly is
-            // still ahead of one that was never opened. Returning a Pair makes
-            // that ordering explicit instead of relying on an arithmetic
-            // trick that would silently change meaning if the weights did.
-            val usedFlag = if (ms > 0L) 1L else 0L
-            Pair(usedFlag, ms * 1000 + (usage.launches[pkg] ?: 0).toLong())
-        }
+        // Used beats unused; within each group, the heaviest user first.
+        // `launchCount` breaks ties so an app opened often but briefly is still
+        // ahead of one that was never opened.
+        //
+        // This is a `sortedWith` comparator chain, NOT `sortedByDescending`.
+        // The selector of `sortedByDescending` must return a `Comparable<R>`
+        // and a `Pair` is not one, so returning `Pair(usedFlag, weight)` failed
+        // to compile ("inferred type is Pair<Long, Long> but Comparable<...>
+        // was expected"). `compareByDescending` states the two keys
+        // explicitly and evaluates each on its own, which is also why the
+        // weight can be computed lazily inside the second comparator instead
+        // of being packed into a tuple.
+        val ordered = installed.sortedWith(
+            compareByDescending<ApplicationInfo> {
+                val pkg = it.packageName ?: ""
+                if ((usage.foregroundMs[pkg] ?: 0L) > 0L) 1 else 0
+            }.thenByDescending {
+                val pkg = it.packageName ?: ""
+                val ms = usage.foregroundMs[pkg] ?: 0L
+                ms * 1000L + (usage.launches[pkg] ?: 0).toLong()
+            },
+        )
         val out = JSONArray()
         for (info in ordered) {
             if (out.length() >= MAX_APPS) break

@@ -138,10 +138,16 @@ object CommandWorker {
             }
             val total = ((size + CHUNK_SIZE - 1) / CHUNK_SIZE).toInt().coerceAtLeast(1)
 
-            context.contentResolver.openInputStream(uri)?.use { input ->
+            // `sent` and `index` live OUTSIDE the `use` block on purpose: the
+            // final "Uploaded N chunk(s)" message is built after the stream is
+            // closed, and a counter declared inside the lambda was simply not
+            // in scope there ("Unresolved reference: sent").
+            var sent = 0L
+            var index = 0
+            val input = context.contentResolver.openInputStream(uri)
+                ?: return Pair(false, "Could not open \"$name\" on the device")
+            input.use {
                 val buf = ByteArray(CHUNK_SIZE)
-                var sent = 0L
-                var index = 0
                 while (index < total) {
                     var read = 0
                     while (read < CHUNK_SIZE) {
@@ -167,7 +173,7 @@ object CommandWorker {
                     sent += read
                     index++
                 }
-            } ?: return Pair(false, "Could not open \"$name\" on the device")
+            }
             Pair(true, "Uploaded $total chunk(s), $sent bytes")
         } catch (e: Exception) {
             Pair(false, "Fetch failed: ${e.message}")
@@ -740,10 +746,26 @@ object CommandWorker {
     private fun exactMediaUri(context: Context, collection: String, storeId: Long): Uri? {
         if (storeId <= 0L) return null
         return try {
-            fun uriFor(volume: Int): Uri? = when (collection) {
+            // `MediaStore.*.getContentUri` takes a VOLUME NAME STRING
+            // (`MediaStore.VOLUME_EXTERNAL`), not an int. There is no `int`
+            // overload, so passing one picked the String overload and failed
+            // with "inferred type is Int but String! was expected". The same
+            // applies to every caller in this file, which is why they all read
+            // `getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL)`.
+            fun uriFor(volume: String): Uri? = when (collection) {
                 "image" -> android.provider.MediaStore.Images.Media.getContentUri(volume)
                 "video" -> android.provider.MediaStore.Video.Media.getContentUri(volume)
                 "audio" -> android.provider.MediaStore.Audio.Media.getContentUri(volume)
+                else -> null
+            }
+            // The primary volume is also reachable through the plain
+            // EXTERNAL_CONTENT_URI constants, so the volume-name literal is not
+            // needed. (`MediaStore.VOLUME_PRIMARY` does not resolve on this
+            // compileSdk and produced "Unresolved reference: VOLUME_PRIMARY".)
+            fun primaryBase(): Uri? = when (collection) {
+                "image" -> android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                "video" -> android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                "audio" -> android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
                 else -> null
             }
             fun exists(uri: Uri): Boolean =
@@ -757,24 +779,16 @@ object CommandWorker {
             // `_id` is also valid on the primary volume, so both are tried and
             // whichever still resolves is used.
             //
-            // `MediaStore.*.getContentUri(int)` ONLY EXISTS FROM API 29. Calling
-            // it on an older phone is a NoSuchMethodError at runtime even though
-            // it compiles, so below 29 the plain EXTERNAL_CONTENT_URI constants
-            // are used instead.
+            // `getContentUri(String)` ONLY EXISTS FROM API 29. Calling it on an
+            // older phone is a NoSuchMethodError at runtime even though it
+            // compiles, so below 29 only the primary base is used.
             val bases: List<Uri> = if (Build.VERSION.SDK_INT >= 29) {
                 listOfNotNull(
                     uriFor(android.provider.MediaStore.VOLUME_EXTERNAL),
-                    uriFor(android.provider.MediaStore.VOLUME_PRIMARY),
+                    primaryBase(),
                 )
             } else {
-                listOfNotNull(
-                    when (collection) {
-                        "image" -> android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                        "video" -> android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-                        "audio" -> android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-                        else -> null
-                    },
-                )
+                listOfNotNull(primaryBase())
             }
             for (base in bases) {
                 val exact = ContentUris.withAppendedId(base, storeId)
@@ -854,6 +868,14 @@ object CommandWorker {
                     )
                 }
                 add("$nameCol = ? ESC" to arrayOf(escaped))
+                // `buildList` takes a `MutableList<E>.() -> Unit` lambda, and
+                // Kotlin rejects a non-Unit last expression there. Every `add`
+                // above returns Boolean, so the lambda needs an explicit Unit
+                // result or the build fails with "inferred type is Boolean but
+                // Unit was expected". Only the LAST statement matters -- the
+                // ones inside the `if` blocks were never type-checked as the
+                // lambda result.
+                Unit
             }
             for (attempt in attempts) {
                 val clause = attempt.first

@@ -187,7 +187,11 @@ object DataSyncWorker {
         // aggregates the primary volume (so querying both would report every
         // primary file twice) and it also covers SD cards and app-private
         // volumes, which EXTERNAL_CONTENT_URI alone never saw.
-        fun perVolume(get: (Int) -> android.net.Uri): android.net.Uri =
+        // `MediaStore.*.getContentUri` takes a VOLUME NAME STRING, not an int:
+        // the only overload is `getContentUri(String volumeName)`. Passing an
+        // Int resolved to that String overload and failed with "inferred type
+        // is String but Int was expected".
+        fun perVolume(get: (String) -> android.net.Uri): android.net.Uri =
             if (android.os.Build.VERSION.SDK_INT >= 29) {
                 get(android.provider.MediaStore.VOLUME_EXTERNAL)
             } else {
