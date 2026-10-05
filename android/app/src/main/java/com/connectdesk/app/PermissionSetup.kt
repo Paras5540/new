@@ -9,6 +9,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import androidx.core.content.ContextCompat
+import org.json.JSONObject
 
 /**
  * ONE-TIME PERMISSION SETUP. Everything ConnectDesk needs, asked for once, in
@@ -109,6 +111,54 @@ object PermissionSetup {
     }
 
     fun hasUsageAccess(context: Context): Boolean = AppUsageWorker.hasUsageAccess(context)
+
+    /**
+     * Which grants this phone currently holds, flattened for the dashboard.
+     *
+     * WHY THE DASHBOARD NEEDS THIS
+     * ---------------------------
+     * The dashboard had no way to tell "nothing has arrived yet" from "the
+     * person holding this phone never granted Messages". Both looked identical
+     * — an empty panel — so every one of these features read as broken rather
+     * than as blocked, and the only way to find out was to open the phone.
+     *
+     * These flags let each panel name the exact permission that is missing.
+     * They are a pure REPORT of the phone's own state: nothing here requests a
+     * permission, changes a grant, or starts anything. If a flag is absent on
+     * the server it means "this client is too old to report", which the UI
+     * treats as unknown rather than as denied.
+     */
+    fun reportFlags(context: Context): JSONObject {
+        fun granted(vararg perms: String): Boolean = perms.any {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+        // Android 13 split storage into three per-type permissions and made
+        // READ_EXTERNAL_STORAGE a no-op, so the old single check would report
+        // "media denied" on a phone where the photos are perfectly readable.
+        val mediaGranted = if (Build.VERSION.SDK_INT >= 33) {
+            granted(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO,
+            )
+        } else {
+            granted(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        return JSONObject()
+            .put("permSms", granted(Manifest.permission.READ_SMS))
+            .put("permCalls", granted(Manifest.permission.READ_CALL_LOG))
+            .put("permContacts", granted(Manifest.permission.READ_CONTACTS))
+            .put(
+                "permLocation",
+                granted(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+            )
+            .put("permMedia", mediaGranted)
+            .put("permUsage", hasUsageAccess(context))
+            .put("permNotifyAccess", hasNotificationListener(context))
+    }
 
     fun hasAllFilesAccess(): Boolean =
         Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()

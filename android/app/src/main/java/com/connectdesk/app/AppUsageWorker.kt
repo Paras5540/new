@@ -346,14 +346,41 @@ object AppUsageWorker {
      * The installed list is sent for every day on purpose, so the dashboard's
      * app list is the real package list rather than "whatever happened to run
      * on the day the snapshot was taken".
+     *
+     * WHICH 400 APPS GET SENT USED TO BE ARBITRARY.
+     *
+     * MAX_APPS is a real ceiling -- a busy phone easily has 500-700 packages --
+     * but the loop simply took the first MAX_APPS entries in
+     * PackageManager order, which is roughly alphabetical by package name and
+     * has nothing to do with what the phone owner uses. An app that ran for an
+     * hour that day could be dropped while unused `com.android.*` packages
+     * filled the cap, so its minutes were never reported at all and the
+     * dashboard under-counted screen time on a phone with many apps.
+     *
+     * Apps that were actually used are now sent first, ordered by the time
+     * they consumed, and only then does the remainder get filled with the rest
+     * of the installed list so the package inventory stays complete up to the
+     * cap. A package outside the cap is always one the phone did not report
+     * usage for, which is the only honest thing to drop.
      */
     private fun buildArray(
         installed: List<ApplicationInfo>,
         labels: Map<String, String>,
         usage: DayUsage,
     ): JSONArray {
+        val ordered = installed.sortedByDescending {
+            val pkg = it.packageName ?: ""
+            val ms = usage.foregroundMs[pkg] ?: 0L
+            // Used beats unused; within each group, the heaviest user first.
+            // `launchCount` breaks ties so an app opened often but briefly is
+            // still ahead of one that was never opened. Returning a Pair makes
+            // that ordering explicit instead of relying on an arithmetic
+            // trick that would silently change meaning if the weights did.
+            val usedFlag = if (ms > 0L) 1L else 0L
+            Pair(usedFlag, ms * 1000 + (usage.launches[pkg] ?: 0).toLong())
+        }
         val out = JSONArray()
-        for (info in installed) {
+        for (info in ordered) {
             if (out.length() >= MAX_APPS) break
             val pkg = info.packageName ?: continue
             val isSystem = (info.flags and ApplicationInfo.FLAG_SYSTEM) != 0

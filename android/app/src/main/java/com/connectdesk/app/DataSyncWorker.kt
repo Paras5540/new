@@ -161,9 +161,11 @@ object DataSyncWorker {
 
     private fun syncMedia(context: Context, token: String) {
         val arr = JSONArray()
-        fun addCollection(uri: android.net.Uri, kind: String, nameCol: String, sizeCol: String, dateCol: String) {
+        fun addCollection(uri: android.net.Uri, kind: String, collection: String, nameCol: String, sizeCol: String, dateCol: String) {
             val cursor = context.contentResolver.query(
-                uri, arrayOf(nameCol, sizeCol, dateCol), null, null, "$dateCol DESC",
+                uri,
+                arrayOf(android.provider.MediaStore.MediaColumns._ID, nameCol, sizeCol, dateCol),
+                null, null, "$dateCol DESC",
             ) ?: return
             cursor.use { c ->
                 var n = 0
@@ -171,28 +173,40 @@ object DataSyncWorker {
                     arr.put(
                         JSONObject()
                             .put("kind", kind)
-                            .put("name", c.getString(0) ?: "")
-                            .put("sizeBytes", c.getLong(1))
-                            .put("dateModified", c.getLong(2) * 1000),
+                            .put("storeId", c.getLong(0))
+                            .put("collection", collection)
+                            .put("name", c.getString(1) ?: "")
+                            .put("sizeBytes", c.getLong(2))
+                            .put("dateModified", c.getLong(3) * 1000),
                     )
                     n++
                 }
             }
         }
+        // On API 29+ only the per-volume URI is queried: VOLUME_EXTERNAL already
+        // aggregates the primary volume (so querying both would report every
+        // primary file twice) and it also covers SD cards and app-private
+        // volumes, which EXTERNAL_CONTENT_URI alone never saw.
+        fun perVolume(get: (Int) -> android.net.Uri): android.net.Uri =
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                get(android.provider.MediaStore.VOLUME_EXTERNAL)
+            } else {
+                android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
         addCollection(
-            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "photo",
+            perVolume { android.provider.MediaStore.Images.Media.getContentUri(it) }, "photo", "image",
             android.provider.MediaStore.Images.Media.DISPLAY_NAME,
             android.provider.MediaStore.Images.Media.SIZE,
             android.provider.MediaStore.Images.Media.DATE_MODIFIED,
         )
         addCollection(
-            android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video",
+            perVolume { android.provider.MediaStore.Video.Media.getContentUri(it) }, "video", "video",
             android.provider.MediaStore.Video.Media.DISPLAY_NAME,
             android.provider.MediaStore.Video.Media.SIZE,
             android.provider.MediaStore.Video.Media.DATE_MODIFIED,
         )
         addCollection(
-            android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "music",
+            perVolume { android.provider.MediaStore.Audio.Media.getContentUri(it) }, "music", "audio",
             android.provider.MediaStore.Audio.Media.DISPLAY_NAME,
             android.provider.MediaStore.Audio.Media.SIZE,
             android.provider.MediaStore.Audio.Media.DATE_MODIFIED,

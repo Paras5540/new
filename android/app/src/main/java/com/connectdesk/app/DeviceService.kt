@@ -110,6 +110,36 @@ class DeviceService : Service() {
                 detailJson.put("screenArmed", ScreenCaptureService.isSharing)
                 val facingNow = CameraLiveService.armedFacing(this@DeviceService)
                 if (facingNow.isNotEmpty()) detailJson.put("armedFacing", facingNow)
+                // Which grants the phone holds, refreshed EVERY tick (not just
+                // on the DETAIL_EVERY cycle) for the same reason as the arm
+                // state: the owner can grant or revoke a permission in Android
+                // Settings at any moment, and a dashboard that keeps saying
+                // "permission missing" for five seconds after it was granted
+                // (or vice versa) is worse than no answer at all.
+                //
+                // These are pure `checkSelfPermission` calls — no I/O, no
+                // binder round trip that would matter at a 1s cadence.
+                val permFlags = PermissionSetup.reportFlags(this@DeviceService)
+                for (permKey in permFlags.keys().asSequence()) {
+                    detailJson.put(permKey, permFlags.get(permKey))
+                }
+                // The phone's OWN sync switches, same reasoning. These are read
+                // by NotificationSyncService/ClipboardWorker to decide whether to
+                // send anything at all, so a dashboard page sitting empty could
+                // mean "the owner switched this off on the phone". Reporting
+                // them lets the page say so instead of showing a bare "no data".
+                detailJson.put(
+                    "syncNotifications",
+                    Prefs.notifSyncEnabled(this@DeviceService),
+                )
+                detailJson.put(
+                    "syncChats",
+                    Prefs.chatsSyncEnabled(this@DeviceService),
+                )
+                detailJson.put(
+                    "syncClipboard",
+                    Prefs.clipboardSyncEnabled(this@DeviceService),
+                )
                 val battery = batteryPct()
                 val storage = storageMb()
                 val beat = ApiClient.heartbeatDetailed(

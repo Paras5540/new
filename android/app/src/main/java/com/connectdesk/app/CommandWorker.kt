@@ -15,7 +15,6 @@ import android.os.Build
 import android.telephony.SmsManager
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 
 /**
  * Executes dashboard-originated commands on the device:
@@ -87,7 +86,23 @@ object CommandWorker {
         }
     }
 
-    /** Reads the media file and uploads it in chunks. Returns (ok, detail). */
+    /**
+     * Reads the media file and uploads it in chunks. Returns (ok, detail).
+     *
+     * STREAMED, NOT BUFFERED. This used to call `readAll()`, which pulled the
+     * ENTIRE file into one `ByteArray` and then sliced it. A 200 MB video is
+     * ~200 MB of heap on top of the base64 copy that encoding makes, which
+     * blows past a normal app heap: the phone threw OutOfMemoryError, the
+     * command was marked failed, and the dashboard sat on a spinner forever
+     * with no error anywhere. Photos (a few MB) survived, which is exactly
+     * the "photo downloads but video never does" symptom. Songs sat in the
+     * middle and failed on anything longer than a few minutes.
+     *
+     * Now the bytes are read straight off the ContentResolver stream in
+     * CHUNK_SIZE slices and released after each upload, so peak memory is one
+     * chunk regardless of file size -- the same approach `FileWorker.sendFile`
+     * already uses, which is why device-file downloads never hit this.
+     */
     private fun fetchMedia(
         context: Context,
         token: String,
@@ -100,27 +115,78 @@ object CommandWorker {
             return Pair(false, "Media read permission not granted on device")
         }
         return try {
-            val uri = resolveMediaUri(
-                context,
-                name,
-                payload.optLong("sizeBytes", 0L),
-                payload.optLong("dateModified", 0L),
-            ) ?: return Pair(false, "File not found on device")
-            val bytes = readAll(context, uri)
-                ?: return Pair(false, "Could not read file")
-            val total = (bytes.size + CHUNK_SIZE - 1) / CHUNK_SIZE
-            for (i in 0 until total) {
-                val from = i * CHUNK_SIZE
-                val to = minOf(from + CHUNK_SIZE, bytes.size)
-                val part = bytes.copyOfRange(from, to)
-                val b64 = android.util.Base64.encodeToString(part, android.util.Base64.NO_WRAP)
-                val ok = ApiClient.uploadMediaChunk(token, mediaId, i, total, b64)
-                if (!ok) return Pair(false, "Upload failed at chunk ${i + 1}/$total")
+            // The EXACT MediaStore row when the media index reported one. The
+            // name search is only the fallback for rows indexed before the
+            // index carried `_id`, and for a row whose id has gone stale.
+            val uri = exactMediaUri(context, payload.optString("collection", ""), payload.optLong("storeId", 0L))
+                ?: resolveMediaUri(
+                    context,
+                    name,
+                    payload.optLong("sizeBytes", 0L),
+                    payload.optLong("dateModified", 0L),
+                )
+                ?: return Pair(false, "File not found on device")
+
+            val size = sizeOf(context, uri, payload.optLong("sizeBytes", 0L))
+            // The server declares the transfer set (and therefore `total`) from
+            // the FIRST chunk, so `total` has to be right before anything is
+            // sent. A length we cannot determine is an honest failure rather
+            // than a wrong part count that would leave the set permanently
+            // incomplete on the dashboard.
+            if (size <= 0L) {
+                return Pair(false, "Could not determine the size of \"$name\" on the device")
             }
-            Pair(true, "Uploaded $total chunk(s), ${bytes.size} bytes")
+            val total = ((size + CHUNK_SIZE - 1) / CHUNK_SIZE).toInt().coerceAtLeast(1)
+
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val buf = ByteArray(CHUNK_SIZE)
+                var sent = 0L
+                var index = 0
+                while (index < total) {
+                    var read = 0
+                    while (read < CHUNK_SIZE) {
+                        val n = input.read(buf, read, CHUNK_SIZE - read)
+                        if (n <= 0) break
+                        read += n
+                    }
+                    if (read <= 0) {
+                        // The stream ended early. Say so instead of declaring a
+                        // short upload that would look complete on the server
+                        // but be missing bytes.
+                        return Pair(
+                            false,
+                            "Phone par file adhoori padhi (${sent} of $size bytes)",
+                        )
+                    }
+                    val part = if (read == CHUNK_SIZE) buf else buf.copyOf(read)
+                    val b64 =
+                        android.util.Base64.encodeToString(part, android.util.Base64.NO_WRAP)
+                    if (!ApiClient.uploadMediaChunk(token, mediaId, index, total, b64)) {
+                        return Pair(false, "Upload failed at chunk ${index + 1}/$total")
+                    }
+                    sent += read
+                    index++
+                }
+            } ?: return Pair(false, "Could not open \"$name\" on the device")
+            Pair(true, "Uploaded $total chunk(s), $sent bytes")
         } catch (e: Exception) {
             Pair(false, "Fetch failed: ${e.message}")
         }
+    }
+
+    /**
+     * Length of a MediaStore item, in bytes.
+     *
+     * The dashboard already carries `sizeBytes` from the synced index, but it
+     * can be 0 for some providers, and the asset-file length is authoritative
+     * when it is available, so the synced value is only the fallback.
+     */
+    private fun sizeOf(context: Context, uri: Uri, fallback: Long): Long = try {
+        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+            if (afd.length > 0L) afd.length else fallback
+        } ?: fallback
+    } catch (_: Throwable) {
+        fallback
     }
 
     /**
@@ -448,11 +514,44 @@ object CommandWorker {
                 "Live camera is streaming and holds the camera. Turn live camera off, then take the photo.",
             )
         }
-        postPhotoNotice(context, facing)
+
+        // ANDROID 11+ REFUSES A BACKGROUND CAMERA OPEN, SO DO NOT EVEN TRY.
+        //
+        // `CameraWorker.capture` opens camera2 from this thread, which belongs
+        // to `DeviceService` — a foreground service declared as `dataSync`, not
+        // `camera`. From Android 11 onwards the platform rejects that outright
+        // with a `CameraAccessException` (CAMERA_DISABLED) because the process
+        // has no visible activity and no camera-type foreground service. The
+        // camera never opens, so no frame arrives, and the command reports
+        // failure every single time — which is why taking a photo from the
+        // dashboard appeared to do nothing at all.
+        //
+        // The fix is not to ask for a bigger permission: it is to make the app
+        // genuinely foregrounded for the capture, which is what
+        // `CameraConsentActivity` does. The owner taps the notification, the
+        // activity comes up, the camera opens, one frame is taken, the app
+        // closes. That is also the only honest option — the owner is visibly
+        // present while the shutter fires, instead of a photo appearing with
+        // no indication anything was taken.
+        //
+        // Below Android 11 the background open is still permitted, so the
+        // direct path is kept there (and tried first, so no tap is needed on
+        // older phones).
+        if (Build.VERSION.SDK_INT >= 30) {
+            postTapToAllow(context, token, facing)
+            return Pair(
+                true,
+                "Phone par notification aayi hai — camera khulne ke liye Allow dabayein",
+            )
+        }
+
         val direct = CameraWorker.capture(context, token, facing)
-        if (direct.first) return direct
-        // Fall back to the old tap-to-allow path, which is still the correct
-        // answer when the OS refuses a camera open with no visible activity.
+        if (direct.first) {
+            // The notice is posted only once the capture actually happened, so
+            // it never claims a photo was taken when none was.
+            postPhotoNotice(context, facing)
+            return direct
+        }
         postTapToAllow(context, token, facing)
         return Pair(
             false,
@@ -627,6 +726,66 @@ object CommandWorker {
      * covers only the primary volume, so a photo taken into an SD card or an
      * app-private volume was invisible to the lookup.
      */
+    /**
+     * The exact MediaStore row for a synced item, when the phone reported one.
+     *
+     * `_id` is unique within a collection, so this opens precisely the file the
+     * dashboard listed rather than searching for a same-named one — which is
+     * the whole point, because `IMG_20240115_101530.jpg` legitimately exists
+     * in both DCIM and the WhatsApp folder.
+     *
+     * Returns null when no id was synced, the collection tag is unknown, or
+     * the row no longer exists; the caller then falls back to the name search.
+     */
+    private fun exactMediaUri(context: Context, collection: String, storeId: Long): Uri? {
+        if (storeId <= 0L) return null
+        return try {
+            fun uriFor(volume: Int): Uri? = when (collection) {
+                "image" -> android.provider.MediaStore.Images.Media.getContentUri(volume)
+                "video" -> android.provider.MediaStore.Video.Media.getContentUri(volume)
+                "audio" -> android.provider.MediaStore.Audio.Media.getContentUri(volume)
+                else -> null
+            }
+            fun exists(uri: Uri): Boolean =
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(android.provider.MediaStore.MediaColumns._ID),
+                    null, null, null,
+                )?.use { c -> c.moveToFirst() } == true
+
+            // The row was indexed from VOLUME_EXTERNAL on API 29+, but the same
+            // `_id` is also valid on the primary volume, so both are tried and
+            // whichever still resolves is used.
+            //
+            // `MediaStore.*.getContentUri(int)` ONLY EXISTS FROM API 29. Calling
+            // it on an older phone is a NoSuchMethodError at runtime even though
+            // it compiles, so below 29 the plain EXTERNAL_CONTENT_URI constants
+            // are used instead.
+            val bases: List<Uri> = if (Build.VERSION.SDK_INT >= 29) {
+                listOfNotNull(
+                    uriFor(android.provider.MediaStore.VOLUME_EXTERNAL),
+                    uriFor(android.provider.MediaStore.VOLUME_PRIMARY),
+                )
+            } else {
+                listOfNotNull(
+                    when (collection) {
+                        "image" -> android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                        "video" -> android.provider.MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                        "audio" -> android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                        else -> null
+                    },
+                )
+            }
+            for (base in bases) {
+                val exact = ContentUris.withAppendedId(base, storeId)
+                if (exists(exact)) return exact
+            }
+            null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun resolveMediaUri(
         context: Context,
         name: String,
@@ -673,7 +832,18 @@ object CommandWorker {
             val escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             // Narrowest first: name + size + date. Then name + size. Then name.
             val attempts = buildList {
-                add("$nameCol = ? ESC" to arrayOf(escaped))
+                // NARROWEST FIRST. The name-only clause used to be tried first,
+                // so the search stopped at the first same-named row it found --
+                // usually the copy in the wrong folder. The loop below returns
+                // on the first hit, so the ORDER is the whole behaviour: exact
+                // (name+size+date), then name+size, then name+date, and only
+                // then the bare name.
+                if (sizeBytes > 0 && wantSec > 0) {
+                    add(
+                        "$nameCol = ? ESC AND $sizeCol = ? AND $dateCol >= ? AND $dateCol <= ?" to
+                            arrayOf(escaped, sizeBytes.toString(), (wantSec - 2).toString(), (wantSec + 2).toString()),
+                    )
+                }
                 if (sizeBytes > 0) {
                     add("$nameCol = ? ESC AND $sizeCol = ?" to arrayOf(escaped, sizeBytes.toString()))
                 }
@@ -683,6 +853,7 @@ object CommandWorker {
                             arrayOf(escaped, (wantSec - 2).toString(), (wantSec + 2).toString()),
                     )
                 }
+                add("$nameCol = ? ESC" to arrayOf(escaped))
             }
             for (attempt in attempts) {
                 val clause = attempt.first
@@ -704,18 +875,6 @@ object CommandWorker {
             }
         }
         return null
-    }
-
-    private fun readAll(context: Context, uri: Uri): ByteArray? = try {
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            val out = ByteArrayOutputStream()
-            val buf = ByteArray(64 * 1024)
-            var n: Int
-            while (input.read(buf).also { n = it } > 0) out.write(buf, 0, n)
-            out.toByteArray()
-        }
-    } catch (e: Exception) {
-        null
     }
 
     private fun hasPermission(context: Context, perm: String): Boolean =

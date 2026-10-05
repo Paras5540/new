@@ -443,6 +443,26 @@ object ApiClient {
      * Heartbeat + live hardware detail in one call, so the dashboard's device
      * card is never more than a minute behind.
      */
+    /**
+     * Device-state flags the device reports and the dashboard mirrors.
+     *
+     * `perm*` are Android grants the phone holds; `sync*` are the phone's own
+     * sync switches. Both exist so an empty dashboard panel can name the exact
+     * blocker instead of looking like a broken feature.
+     */
+    private val PERM_KEYS = arrayOf(
+        "permSms",
+        "permCalls",
+        "permContacts",
+        "permLocation",
+        "permMedia",
+        "permUsage",
+        "permNotifyAccess",
+        "syncNotifications",
+        "syncChats",
+        "syncClipboard",
+    )
+
     fun heartbeatDetailed(
         token: String,
         batteryPct: Int?,
@@ -471,6 +491,13 @@ object ApiClient {
         body.put("screenArmed", detail.optBoolean("screenArmed"))
         val facing = detail.optString("armedFacing", "")
         if (facing.isNotEmpty()) body.put("armedFacing", facing)
+        // Which Android grants the phone holds. Reported so an empty dashboard
+        // panel can say "Messages permission nahi hai" instead of looking
+        // broken. These are the phone's own state; the dashboard never sets
+        // them and the phone never asks for anything because of them.
+        for (permKey in PERM_KEYS) {
+            if (detail.has(permKey)) body.put(permKey, detail.optBoolean(permKey))
+        }
         val resp = post("/api/device/heartbeat", body) ?: return null
         return resp.optString("status")
     }
