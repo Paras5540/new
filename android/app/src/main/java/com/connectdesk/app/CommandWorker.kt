@@ -209,9 +209,12 @@ object CommandWorker {
         payload: JSONObject,
     ): Pair<Boolean, String> {
         if (ScreenCaptureService.isSharing) {
+            ScreenCaptureService.clearPendingOwnerAction()
             return Pair(true, "Screen sharing already active")
         }
         if (Build.VERSION.SDK_INT < 29) {
+            ScreenCaptureService.clearPendingOwnerAction()
+            ApiClient.completeCommand(token, commandId, false, "Screen share needs Android 10+")
             return Pair(false, "Screen share needs Android 10+")
         }
         val width = payload.optInt("width", 720).coerceIn(360, 1080)
@@ -231,6 +234,7 @@ object CommandWorker {
         // with its Stop action, which is the consent indicator that matters.
         if (ScreenCaptureService.startWithStoredConsent(context, width, intervalMs)) {
             postShareNotice(context)
+            ScreenCaptureService.clearPendingOwnerAction()
             ApiClient.completeCommand(token, commandId, true, "Screen sharing started (consent reused)")
             return Pair(true, "Screen sharing started on device (consent reused)")
         }
@@ -244,6 +248,19 @@ object CommandWorker {
         // Direct launch works when the app happens to be in the foreground.
         try {
             context.startActivity(intent)
+            ScreenCaptureService.markPendingOwnerAction(
+                "Phone par Android ka \"Start recording or casting?\" dialog khula hai — device user ko Allow dabana hai",
+            )
+            // This path used to return WITHOUT completing the command. The
+            // dashboard therefore kept polling a command that was never
+            // resolved and kept displaying the PREVIOUS request's result --
+            // "consent: done, Screen sharing started on device" -- over a share
+            // that had not started at all. Completing it here makes the badge
+            // describe this request.
+            ApiClient.completeCommand(
+                token, commandId, true,
+                "Phone par consent dialog khul gaya — device user ko Allow dabana hai",
+            )
             return Pair(true, "Consent dialog raised on device")
         } catch (_: Throwable) {
             // Fall through to the notification path below.
@@ -287,8 +304,20 @@ object CommandWorker {
                 .setPriority(Notification.PRIORITY_MAX)
                 .build()
             nm.notify(REQUEST_CODE, notif)
+            ScreenCaptureService.markPendingOwnerAction(
+                "Phone par notification aayi hai — device user ko \"Allow\" dabana hai, tabhi frames aayenge",
+            )
+            ApiClient.completeCommand(
+                token, commandId, true,
+                "Notification bhej di — device user ko Allow dabana hai",
+            )
             Pair(true, "Waiting for the user to accept the screen-share prompt on the device")
         } catch (e: Throwable) {
+            ScreenCaptureService.clearPendingOwnerAction()
+            ApiClient.completeCommand(
+                token, commandId, false,
+                "Consent prompt nahi dikh paya: ${e.message}",
+            )
             Pair(false, "Could not raise consent prompt: ${e.message}")
         }
     }

@@ -489,6 +489,11 @@ object ApiClient {
         body.put("cameraLiveArmed", detail.optBoolean("cameraLiveArmed"))
         body.put("micLiveArmed", detail.optBoolean("micLiveArmed"))
         body.put("screenArmed", detail.optBoolean("screenArmed"))
+        // The phone's own reason for a dead screen mirror. Forwarded verbatim
+        // so the page can print it instead of a bare "frames ka wait"; omitted
+        // when empty so the server keeps the last known value.
+        val shareError = detail.optString("screenShareError", "")
+        if (shareError.isNotEmpty()) body.put("screenShareError", shareError)
         val facing = detail.optString("armedFacing", "")
         if (facing.isNotEmpty()) body.put("armedFacing", facing)
         // Which Android grants the phone holds. Reported so an empty dashboard

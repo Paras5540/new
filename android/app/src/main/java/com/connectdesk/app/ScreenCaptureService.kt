@@ -47,12 +47,76 @@ class ScreenCaptureService : Service() {
     private var imageReader: ImageReader? = null
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
+    /**
+     * The VirtualDisplay's OWN thread, separate from the upload loop's.
+     *
+     * WHY THIS HAD TO BE SPLIT
+     * -------------------------
+     * `createVirtualDisplay(..., callback = captureHandler)` used to hand the
+     * render pipeline the very thread that then spends the whole tick doing a
+     * blocking HTTPS POST. While that POST is in flight the render callbacks
+     * cannot run, so the compositor has nowhere to deliver frames, and the
+     * next tick's `acquireLatestImage()` can return null -- reported as "no
+     * frame from the virtual display" and counted as a failure, even though
+     * the mirror itself was fine. The longer the connection, the longer the
+     * starvation, and on a weak link the stream could never produce a single
+     * frame: `Session active — frames ka wait` with no reason on the page,
+     * because from the service's point of view the reader really was empty.
+     *
+     * Rendering and uploading must not share a thread. The upload loop keeps
+     * `captureHandler`; the VirtualDisplay gets `renderHandler`, which is idle
+     * except while it is delivering buffers.
+     */
+    private var renderThread: HandlerThread? = null
+    private var renderHandler: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var running = false
     private var seq = 0L
     private var width = 720
     private var intervalMs = 1000L
     private var staleStreak = 0
+
+    /**
+     * Wall-clock instant after which a share that has still never delivered a
+     * frame gives up.
+     *
+     * WHY THIS IS A TIME AND NOT A COUNT
+     * ----------------------------------
+     * The rule used to be "6 consecutive failures", which at the default one
+     * second cadence is six seconds. A MediaProjection's first frame routinely
+     * takes longer than that on a cold start, on a slow device, or while the
+     * display is waking, so a share that was about to work was torn down
+     * exactly when it was warming up — and the page showed nothing. Counting
+     * also scaled with the interval, so at a 5 s cadence the same rule meant
+     * thirty seconds of guessing instead of six.
+     *
+     * [START_GRACE_MS] is the honest number: long enough for a cold start on a
+     * slow phone, short enough that a genuinely broken share still ends and
+     * reports itself.
+     */
+    @Volatile
+    private var giveUpAt = 0L
+
+    /**
+     * Why the last tick produced no frame.
+     *
+     * Every failure path used to be swallowed by a bare `catch`, so the service
+     * could die with nothing anywhere saying why and the dashboard sat on
+     * "frames ka wait" forever. This carries the reason out to the heartbeat,
+     * where the page can show it instead of guessing.
+     */
+    @Volatile
+    private var lastErrorReason = ""
+
+    /**
+     * Outcome of one capture tick.
+     *
+     * A plain Boolean could not tell "the server accepted a frame" from "an
+     * upload was already in flight, so this tick did nothing" -- and the second
+     * one was being counted as the first. That reset the failure counter on a
+     * stream that was not actually delivering anything.
+     */
+    private enum class Outcome { SENT, BUSY, FAILED }
 
     /**
      * Frames skipped because the last upload had not finished yet.
@@ -95,12 +159,18 @@ class ScreenCaptureService : Service() {
         //
         // Promoting it means every exit from here is legal: either the service
         // is a foreground service, or it stopped itself.
-        startAsForeground()
-
-        val token = ApiClient.loadToken(this) ?: run {
-            stopSelf()
-            return START_NOT_STICKY
+        // Every exit from here is recorded. The failure paths used to be a bare
+        // `stopSelf()`, so a share that died before its first upload left the
+        // dashboard on "Session active — frames ka wait" with the badge still
+        // reading "waiting for consent" and NO reason anywhere: the phone had
+        // nothing to report and the page had nothing to show.
+        try {
+            startAsForeground()
+        } catch (e: Exception) {
+            return abort("Android refused the foreground service: ${e.message ?: e.javaClass.simpleName}")
         }
+
+        val token = ApiClient.loadToken(this) ?: return abort("phone has no device token")
         this.token = token
 
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE) ?: Int.MIN_VALUE
@@ -112,8 +182,7 @@ class ScreenCaptureService : Service() {
         val existing = grantedProjection
         if (!reuse && (resultCode == Int.MIN_VALUE || data == null)) {
             // No projection at all: cannot (and must not) capture.
-            stopSelf()
-            return START_NOT_STICKY
+            return abort("no MediaProjection consent result came back from the phone")
         }
 
         // `intent` is a nullable parameter of onStartCommand, so these have to
@@ -127,6 +196,14 @@ class ScreenCaptureService : Service() {
 
         if (running) return START_STICKY
         running = true
+        // Wall-clock budget for the FIRST delivered frame, not a count of
+        // tries. See `giveUpAt` in the capture loop.
+        giveUpAt = System.currentTimeMillis() + START_GRACE_MS
+        // A fresh attempt starts with a clean slate, so the page never shows the
+        // PREVIOUS session's failure reason over a share that has just begun.
+        lastError = ""
+        lastErrorReason = ""
+        staleStreak = 0
 
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         if (reuse && existing != null) {
@@ -134,9 +211,13 @@ class ScreenCaptureService : Service() {
         } else {
             try {
                 projection = mpm.getMediaProjection(resultCode, data!!)
-            } catch (_: Exception) {
-                stopSelf()
-                return START_NOT_STICKY
+            } catch (e: Exception) {
+                // The reason this used to be invisible: it was `catch (_: Exception)`.
+                // Android throws here when the consent result has already been
+                // spent (a one-shot result code) or when the projection was
+                // revoked system-side between the dialog and here — and the
+                // service stopped with no `isSharing`, no frame and no message.
+                return abort("Android refused the screen projection: ${e.message ?: e.javaClass.simpleName}")
             }
         }
         projection?.registerCallback(projectionCallback, mainHandler)
@@ -147,17 +228,48 @@ class ScreenCaptureService : Service() {
 
         captureThread = HandlerThread("connectdesk-capture").also { it.start() }
         captureHandler = Handler(captureThread!!.looper)
-        setupVirtualDisplay()
+        renderThread = HandlerThread("connectdesk-screen-render").also { it.start() }
+        renderHandler = Handler(renderThread!!.looper)
+        // A throw here (an unsupported pixel format, a rejected surface size)
+        // used to escape onStartCommand and take the whole PROCESS down, so
+        // even the heartbeat went with it and the dashboard just saw the phone
+        // go offline. It is now an ordinary, reported failure.
+        try {
+            setupVirtualDisplay()
+        } catch (e: Exception) {
+            return abort("could not open the virtual display: ${e.message ?: e.javaClass.simpleName}")
+        }
         // The VirtualDisplay exists, so capture is genuinely starting. Only
         // NOW is the device honestly "sharing" -- this is the value the
         // dashboard reads on every heartbeat.
         isSharing = true
+        // Capture is genuinely running, so whatever the phone was waiting on
+        // the owner to do has happened. Until this line the dashboard kept
+        // showing "phone par owner ko Allow dabana hai" over a share that was
+        // already live.
+        pendingOwnerAction = ""
         captureHandler?.post(captureLoop)
 
         return START_STICKY
     }
 
     private var token: String? = null
+
+    /**
+     * Ends this share attempt AND leaves the reason behind.
+     *
+     * `lastError` is reported read-only on the heartbeat, so whatever ends the
+     * service has to write the reason here. A silent `stopSelf()` is the one
+     * thing the dashboard cannot act on.
+     */
+    private fun abort(reason: String): Int {
+        lastError = reason
+        lastErrorReason = reason
+        running = false
+        isSharing = false
+        stopSelf()
+        return START_NOT_STICKY
+    }
 
     private fun setupVirtualDisplay() {
         val metrics = resources.displayMetrics
@@ -172,7 +284,7 @@ class ScreenCaptureService : Service() {
             "ConnectDeskScreen",
             outW, outH, metrics.densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader!!.surface, null, captureHandler,
+            imageReader!!.surface, null, renderHandler,
         )
     }
 
@@ -181,50 +293,72 @@ class ScreenCaptureService : Service() {
         override fun run() {
             if (!running) return
             try {
-                val sent = captureAndUpload()
-                if (sent) {
-                    staleStreak = 0
-                } else {
-                    staleStreak++
+                when (captureAndUpload()) {
+                    Outcome.SENT -> {
+                        staleStreak = 0
+                        lastError = ""
+                    }
+                    // A tick skipped because the previous HTTPS POST is still in
+                    // flight is neither a delivered frame nor a failure: it must
+                    // not reset the counter (a wedged upload would then look
+                    // healthy forever) and must not raise it either.
+                    Outcome.BUSY -> Unit
+                    Outcome.FAILED -> staleStreak++
                 }
-                if (staleStreak >= MAX_CONSECUTIVE_FAILURES) {
-                    // Session gone or network dead — stop capture, stay silent.
-                    stopSelf()
+                if (System.currentTimeMillis() >= giveUpAt) {
+                    abort("no frame delivered for ${START_GRACE_MS / 1000}s ($lastErrorReason)")
                     return
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                lastErrorReason = e.message ?: e.javaClass.simpleName
                 staleStreak++
-                if (staleStreak >= MAX_CONSECUTIVE_FAILURES) {
-                    stopSelf()
+                if (System.currentTimeMillis() >= giveUpAt) {
+                    abort("capture crashed: $lastErrorReason")
                     return
                 }
             }
-            mainHandler.postDelayed(this, intervalMs)
+            // Re-post on the CAPTURE thread. This used to be `mainHandler`, so
+            // every tick after the first ran the ImageReader read, the Bitmap
+            // copy, the JPEG encode AND a blocking HTTPS POST on the main looper.
+            // Doing network I/O on the main looper is what killed the live
+            // camera stream, and here it failed on every tick, was swallowed by
+            // the catch above, pushed `staleStreak` to 6 and made the service
+            // stop itself about six seconds after starting - while the page was
+            // still being told "Screen sharing started on device". The whole
+            // reported symptom follows from this one line.
+            captureHandler?.postDelayed(this, intervalMs)
         }
     }
 
-    /** Returns true when a frame reached the server (or was accepted). */
-    private fun captureAndUpload(): Boolean {
-        val reader = imageReader ?: return false
+    /** Captures and uploads one frame; reports what actually happened. */
+    private fun captureAndUpload(): Outcome {
+        val reader = imageReader ?: run {
+            lastErrorReason = "image reader is gone"
+            return Outcome.FAILED
+        }
+        val deviceToken = token ?: run {
+            lastErrorReason = "no device token"
+            return Outcome.FAILED
+        }
         // Never start a second upload while one is in flight (see `uploading`).
-        if (!uploading.compareAndSet(false, true)) return true
+        if (!uploading.compareAndSet(false, true)) return Outcome.BUSY
         try {
             val image: Image = try {
-                // No new image at all. This used to `return true` -- claiming a
-                // frame had been sent when none had -- which reset the failure
-                // counter and kept a completely dead stream alive forever,
-                // reporting success to the server while the dashboard showed
-                // nothing. The display refreshes many times per second, so at a
-                // 1 s cadence a null here genuinely means the mirror is dead.
-                // Counting it as a failure lets MAX_CONSECUTIVE_FAILURES stop
-                // the service and lets the dashboard show the truth.
-                reader.acquireLatestImage() ?: return false
-            } catch (_: Exception) {
-                return false
+                // No new image at all. The display refreshes many times per
+                // second, so at a 1 s cadence a null here genuinely means the
+                // mirror is not producing frames.
+                reader.acquireLatestImage() ?: run {
+                    lastErrorReason = "no frame from the virtual display"
+                    return Outcome.FAILED
+                }
+            } catch (e: Exception) {
+                lastErrorReason = "acquireLatestImage failed: ${e.message ?: e.javaClass.simpleName}"
+                return Outcome.FAILED
             }
             val jpeg = try {
                 imageToJpeg(image)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                lastErrorReason = "jpeg encode failed: ${e.message ?: e.javaClass.simpleName}"
                 null
             } finally {
                 try {
@@ -232,11 +366,14 @@ class ScreenCaptureService : Service() {
                 } catch (_: Exception) {
                 }
             }
-            val bytes = jpeg ?: return false
-            if (bytes.size > MAX_JPEG_BYTES) return false // skip oversized frame
+            val bytes = jpeg ?: return Outcome.FAILED
+            if (bytes.size > MAX_JPEG_BYTES) {
+                lastErrorReason = "frame too large (${bytes.size} bytes)"
+                return Outcome.FAILED
+            }
             val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
             val result = ApiClient.pushScreenFrame(
-                token ?: return false,
+                deviceToken,
                 ++seq,
                 reader.width,
                 reader.height,
@@ -246,12 +383,20 @@ class ScreenCaptureService : Service() {
             // Server says the session is gone (owner stopped it / timed out) or
             // the capability was turned off: stop capturing immediately.
             return when (result) {
-                "stored" -> true
+                "stored" -> Outcome.SENT
                 "no_session", "capability_off" -> {
+                    lastErrorReason = "server ended the session ($result)"
                     stopSelf()
-                    false
+                    Outcome.FAILED
                 }
-                else -> false // transient error; retry next tick
+                null -> {
+                    lastErrorReason = "server did not accept the frame (network or HTTP error)"
+                    Outcome.FAILED
+                }
+                else -> {
+                    lastErrorReason = "server said: $result"
+                    Outcome.FAILED
+                }
             }
         } finally {
             // Released in a finally so a single failure can never wedge the
@@ -358,6 +503,12 @@ class ScreenCaptureService : Service() {
         }
         captureThread = null
         captureHandler = null
+        try {
+            renderThread?.quitSafely()
+        } catch (_: Exception) {
+        }
+        renderThread = null
+        renderHandler = null
         super.onDestroy()
     }
 
@@ -366,7 +517,13 @@ class ScreenCaptureService : Service() {
         private const val NOTIF_ID = 43
         private const val JPEG_QUALITY = 55
         private const val MAX_JPEG_BYTES = 500_000 // server cap is ~525KB decoded
-        private const val MAX_CONSECUTIVE_FAILURES = 6
+        /**
+         * How long a share keeps trying before it gives up and says why.
+         *
+         * See [giveUpAt]: the old six-FAILURES rule killed shares that were
+         * still waiting for their first frame.
+         */
+        private const val START_GRACE_MS = 45_000L
 
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_DATA = "data"
@@ -443,6 +600,46 @@ class ScreenCaptureService : Service() {
         @Volatile
         var isSharing: Boolean = false
             private set
+
+        /**
+         * Why the mirror is not delivering frames, in the phone's own words.
+         *
+         * Empty when the stream is healthy. Set on the failure path and kept
+         * after `onDestroy`, so a share that died six seconds in still explains
+         * itself on the dashboard instead of showing "frames ka wait" forever.
+         * Reported read-only over the existing heartbeat; the dashboard can
+         * display it but cannot write to it.
+         */
+        @Volatile
+        var lastError: String = ""
+            private set
+
+        /**
+         * What the phone is currently waiting on the OWNER to do, if anything.
+         *
+         * Empty when there is nothing to wait for. This is the missing third
+         * state on the dashboard, and the whole "screen share never works"
+         * dead end lived in it: the page could only see "armed" or "not armed",
+         * so a share sitting in the Android consent dialog looked exactly like
+         * a share that had failed, and the stale result badge from an earlier
+         * consent round-trip said the opposite of what was true.
+         *
+         * Set by [CommandWorker] when it raises the consent prompt and cleared
+         * by the service the moment capture is really running. Report-only.
+         */
+        @Volatile
+        var pendingOwnerAction: String = ""
+            private set
+
+        /** Records what the owner still has to do, so the page can say it. */
+        fun markPendingOwnerAction(action: String) {
+            pendingOwnerAction = action
+        }
+
+        /** Clears the pending note when the owner finished, or gave up. */
+        fun clearPendingOwnerAction() {
+            pendingOwnerAction = ""
+        }
 
         fun start(context: Context, resultCode: Int, data: Intent, width: Int, intervalMs: Int) {
             val intent = Intent(context, ScreenCaptureService::class.java)

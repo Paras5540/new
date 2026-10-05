@@ -108,6 +108,23 @@ class DeviceService : Service() {
                 detailJson.put("cameraLiveArmed", CameraLiveService.isArmed(this@DeviceService))
                 detailJson.put("micLiveArmed", MicLiveService.isArmed(this@DeviceService))
                 detailJson.put("screenArmed", ScreenCaptureService.isSharing)
+                // WHY the mirror is not showing frames, in the phone's own
+                // words. Without this the dashboard could only ever say "frames
+                // ka wait" while the capture loop was failing and self-stopping
+                // — the share looked broken with no reason anywhere. Only sent
+                // when non-empty so a healthy stream cannot blank a previously
+                // reported error on the server (undefined clears a patch field).
+                val shareError = ScreenCaptureService.lastError
+                if (shareError.isNotEmpty()) detailJson.put("screenShareError", shareError)
+                // What the phone is still waiting on the OWNER to do. Without
+                // it the page had only two states, armed and not-armed, so a
+                // share sitting in the Android consent dialog looked exactly
+                // like a share that had failed — and the stale result badge of
+                // an earlier consent said the opposite. Reported every tick,
+                // like the arm state above.
+                val sharePending = ScreenCaptureService.pendingOwnerAction
+                if (sharePending.isNotEmpty()) detailJson.put("screenSharePending", sharePending)
+                else detailJson.put("screenSharePending", "")
                 val facingNow = CameraLiveService.armedFacing(this@DeviceService)
                 if (facingNow.isNotEmpty()) detailJson.put("armedFacing", facingNow)
                 // Which grants the phone holds, refreshed EVERY tick (not just

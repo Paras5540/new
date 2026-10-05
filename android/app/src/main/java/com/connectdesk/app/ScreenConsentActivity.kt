@@ -49,7 +49,7 @@ class ScreenConsentActivity : Activity() {
         // Fast path: consent already given and the platform allows reuse, so
         // start immediately and never flash a dialog at the user.
         if (ScreenCaptureService.startWithStoredConsent(this, width, intervalMs)) {
-            report(true, "Screen sharing started on device (consent reused)")
+            report(true, "Purana consent reuse — capture start ho raha hai")
             finish()
             return
         }
@@ -76,7 +76,15 @@ class ScreenConsentActivity : Activity() {
         val width = intent.getIntExtra(ScreenCaptureService.EXTRA_WIDTH, 720)
         val intervalMs = intent.getIntExtra(ScreenCaptureService.EXTRA_INTERVAL_MS, 1000)
         ScreenCaptureService.start(this, resultCode, data, width, intervalMs)
-        report(true, "Screen sharing started on device")
+        // Deliberately NOT "Screen sharing started on device". `start()` only
+        // asks Android to bring the service up; it returns immediately and the
+        // service can still fail afterwards (a spent result code, a refused
+        // virtual display, a refused foreground service). The old wording made
+        // the dashboard report a live share that never existed, while the phone
+        // had no reason on record to say otherwise. Now the line says what is
+        // actually true, and the phone's own verdict arrives separately as
+        // `screenShareError` on the heartbeat.
+        report(true, "Consent mil gaya — capture start ho raha hai, pehla frame aate hi LIVE dikhega")
         finish()
     }
 

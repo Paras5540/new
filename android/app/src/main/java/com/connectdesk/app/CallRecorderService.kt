@@ -14,6 +14,8 @@ import android.os.IBinder
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyManager
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 /**
@@ -38,12 +40,27 @@ import kotlin.concurrent.thread
  */
 class CallRecorderService : Service() {
 
-    private var recorder: MediaRecorder? = null
+    @Volatile private var recorder: MediaRecorder? = null
+    /** Highest amplitude seen since the call started; 0 means "heard nothing". */
+    @Volatile private var peak = 0
+    private var peakWatch: Thread? = null
     private var outFile: File? = null
     private var recordingId: String? = null
     private var mediaId: String? = null
     private var startedAt = 0L
     private var uploadChunk = 256 * 1024
+    /**
+     * Counted down once the server slot (and therefore `recordingId` /
+     * `mediaId`) has arrived.
+     *
+     * The slot is opened on a background thread so the telephony callback is
+     * never blocked on HTTP -- but that used to race the upload: hang up
+     * before that thread returned and `recordingId`/`mediaId` were still null,
+     * so the recording was deleted and never uploaded. Short calls were the
+     * ones that always vanished. The uploader waits on this instead, and the
+     * latch is what makes the two fields visible across the threads.
+     */
+    @Volatile private var slotReady: CountDownLatch? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -121,45 +138,121 @@ class CallRecorderService : Service() {
 
     // ---- Recording ------------------------------------------------------
 
+    /**
+     * Audio sources to try, best first.
+     *
+     * The original value was `AudioSource.DEFAULT`, and that is exactly why
+     * every recording came out silent: DEFAULT is the source A/V capture uses,
+     * and while a call is up Android routes the microphone to the voice path,
+     * so DEFAULT records the muted stream. It was never an encoder problem --
+     * `MediaRecorder.MIC` is the same physical microphone, and MicLiveService
+     * already records through it without trouble.
+     *
+     * `VOICE_RECOGNITION` is tried first because it is the only PUBLIC source
+     * tuned to coexist with an active call: no AGC, no echo cancellation, and
+     * the platform does not mute it. `MIC` is the fallback for the devices that
+     * refuse it.
+     *
+     * Note what is still NOT here: `VOICE_CALL` / `VOICE_DOWNLINK` are hidden
+     * system APIs and do not resolve on the public SDK, and MediaProjection
+     * deliberately excludes call audio. So the far-end voice is not reachable
+     * and this stays a one-sided device-mic recording, exactly as the class
+     * documentation says.
+     */
+    private val audioSources = intArrayOf(
+        MediaRecorder.AudioSource.VOICE_RECOGNITION,
+        MediaRecorder.AudioSource.MIC,
+    )
+
+    /**
+     * Builds a recorder on the first source that prepares successfully.
+     *
+     * Falling back matters: a source that is wrong for a device fails at
+     * `prepare()`/`start()`, and without the fallback the call would be dropped
+     * instead of retried on the source that works there.
+     */
+    private fun startRecorder(file: File): MediaRecorder? {
+        var last: Throwable? = null
+        for (source in audioSources) {
+            val rec = if (Build.VERSION.SDK_INT >= 31) {
+                MediaRecorder(this)
+            } else {
+                @Suppress("DEPRECATION") MediaRecorder()
+            }
+            try {
+                rec.setAudioSource(source)
+                rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                rec.setAudioEncodingBitRate(64_000)
+                rec.setAudioSamplingRate(44_100)
+                rec.setOutputFile(file.absolutePath)
+                rec.prepare()
+                rec.start()
+                return rec
+            } catch (e: Throwable) {
+                last = e
+                runCatching { rec.release() }
+            }
+        }
+        ServiceStatus.markError("Recorder could not start: ${last?.message}")
+        return null
+    }
+
+    /**
+     * Samples `getMaxAmplitude()` while the call is up.
+     *
+     * `getMaxAmplitude()` reports the peak since the previous call to it, so
+     * polling it and keeping the running maximum gives a truthful "did this
+     * device hear anything at all" answer. That is what turns a silent capture
+     * from a mystery into a named failure -- see `endRecording`.
+     */
+    private fun startPeakWatch() {
+        peak = 0
+        val t = thread(name = "connectdesk-call-peak", isDaemon = true) {
+            while (recorder != null) {
+                val r = recorder ?: break
+                val amp = runCatching { r.maxAmplitude }.getOrDefault(0)
+                if (amp > peak) peak = amp
+                try {
+                    Thread.sleep(300)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }
+        peakWatch = t
+    }
+
     private fun beginRecording(number: String?) {
         if (recorder != null) return
         if (!Prefs.callRecordingArmed(this)) return
         val token = ApiClient.loadToken(this) ?: return
 
         val file = File(cacheDir, "call_${System.currentTimeMillis()}.m4a")
-        try {
-            val rec = if (Build.VERSION.SDK_INT >= 31) {
-                MediaRecorder(this)
-            } else {
-                @Suppress("DEPRECATION") MediaRecorder()
-            }
-            rec.setAudioSource(MediaRecorder.AudioSource.DEFAULT)
-            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            rec.setAudioEncodingBitRate(64_000)
-            rec.setAudioSamplingRate(44_100)
-            rec.setOutputFile(file.absolutePath)
-            rec.prepare()
-            rec.start()
-            recorder = rec
-            outFile = file
-            startedAt = System.currentTimeMillis()
-        } catch (e: Throwable) {
-            runCatching { recorder?.release() }
-            recorder = null
+        val rec = startRecorder(file)
+        if (rec == null) {
             file.delete()
-            ServiceStatus.markError("Recorder could not start: ${e.message}")
             return
         }
+        recorder = rec
+        outFile = file
+        startedAt = System.currentTimeMillis()
+        startPeakWatch()
 
         showRecordingNotification()
 
         // Open a slot on the server so the audio has somewhere to land.
+        val latch = CountDownLatch(1)
+        slotReady = latch
         thread(name = "connectdesk-call-open") {
-            val resp = ApiClient.startCallRecording(token, "Call recording", number, startedAt)
-            recordingId = resp?.recordingId
-            mediaId = resp?.mediaId
-            resp?.chunkSize?.let { uploadChunk = it }
+            try {
+                val resp = ApiClient.startCallRecording(token, "Call recording", number, startedAt)
+                recordingId = resp?.recordingId
+                mediaId = resp?.mediaId
+                resp?.chunkSize?.let { uploadChunk = it }
+            } finally {
+                latch.countDown()
+            }
         }
     }
 
@@ -168,49 +261,108 @@ class CallRecorderService : Service() {
         recorder = null
         val file = outFile
         outFile = null
+        runCatching { peakWatch?.interrupt() }
+        peakWatch = null
+        val heardSomething = peak > 0
+        peak = 0
 
+        var finalised = true
         try {
             rec.stop()
         } catch (_: Throwable) {
             // Too short to finalise an AAC stream; drop it rather than upload
             // a corrupt file that would fail to play.
+            finalised = false
         }
         try {
             rec.release()
         } catch (_: Throwable) {
         }
         cancelNotification()
+
+        fun drop(reason: String?) {
+            runCatching { file?.delete() }
+            if (reason != null) ServiceStatus.markError(reason)
+            recordingId = null
+            mediaId = null
+            stopSelf()
+        }
+
         val token = ApiClient.loadToken(this)
-        if (token != null && file != null && file.exists() && file.length() > 0) {
-            val id = recordingId
-            val media = mediaId
-            val durationSec = ((System.currentTimeMillis() - startedAt) / 1000L).toInt()
-            val size = file.length()
-            thread(name = "connectdesk-call-upload") {
-                try {
-                    if (id != null && media != null) {
-                        val ok = ApiClient.uploadMediaChunk(
-                            token = token,
-                            mediaId = media,
-                            index = 0,
-                            total = 1,
-                            dataB64 = android.util.Base64.encodeToString(
-                                file.readBytes(), android.util.Base64.NO_WRAP,
-                            ),
-                        )
-                        if (ok) {
-                            ApiClient.finishCallRecording(token, id, size, durationSec, "audio/mp4")
+        if (!finalised) {
+            drop("Call recording too short to finalise (dropped)")
+            return
+        }
+        if (token == null || file == null || !file.exists() || file.length() <= 0) {
+            drop("Call recording produced no file")
+            return
+        }
+        if (!heardSomething) {
+            // The device sampled its own microphone for the whole call and the
+            // peak never left zero. Uploading that would put a file on the
+            // dashboard that plays for its full duration and says nothing --
+            // which reads as "broken" with no way to tell why. Name it instead.
+            drop("Call recording captured no audio: phone mic was silent during the call")
+            return
+        }
+
+        val durationSec = ((System.currentTimeMillis() - startedAt) / 1000L).toInt()
+        val size = file.length()
+        thread(name = "connectdesk-call-upload") {
+            try {
+                // Wait for the slot BEFORE reading the ids. Hanging up on a
+                // short call used to beat that POST, so `id`/`media` were
+                // captured as null here and the recording was deleted
+                // un-uploaded. The await also orders the two fields' writes
+                // against their reads.
+                val opened = runCatching {
+                    slotReady?.await(20, TimeUnit.SECONDS) ?: true
+                }.getOrDefault(true)
+                val id = recordingId
+                val media = mediaId
+                if (opened && id != null && media != null) {
+                    // Stream it in `uploadChunk` slices. The old version read
+                    // the WHOLE file with readBytes() and posted it as one
+                    // base64 blob, so a long call (64 kbit/s ~= 4.8 MB for ten
+                    // minutes, ~6.4 MB once base64-encoded) either timed out or
+                    // blew the request limit and the recording was lost.
+                    // The same chunked shape CommandWorker already uses for
+                    // media downloads keeps one slice in memory at a time.
+                    val chunk = uploadChunk.coerceAtLeast(64 * 1024)
+                    val total = ((size + chunk - 1) / chunk).toInt().coerceAtLeast(1)
+                    var ok = true
+                    file.inputStream().use { input ->
+                        val buf = ByteArray(chunk)
+                        var index = 0
+                        while (index < total) {
+                            var read = 0
+                            while (read < chunk) {
+                                val n = input.read(buf, read, chunk - read)
+                                if (n <= 0) break
+                                read += n
+                            }
+                            if (read <= 0) break
+                            val part = if (read == chunk) buf else buf.copyOf(read)
+                            val b64 = android.util.Base64.encodeToString(
+                                part, android.util.Base64.NO_WRAP,
+                            )
+                            if (!ApiClient.uploadMediaChunk(token, media, index, total, b64)) {
+                                ok = false
+                                break
+                            }
+                            index++
                         }
                     }
-                } catch (_: Throwable) {
-                    // best-effort
-                } finally {
-                    // Never leave call audio sitting in the app's cache.
-                    runCatching { file.delete() }
+                    if (ok) {
+                        ApiClient.finishCallRecording(token, id, size, durationSec, "audio/mp4")
+                    }
                 }
+            } catch (_: Throwable) {
+                // best-effort
+            } finally {
+                // Never leave call audio sitting in the app's cache.
+                runCatching { file.delete() }
             }
-        } else {
-            runCatching { file?.delete() }
         }
         recordingId = null
         mediaId = null
