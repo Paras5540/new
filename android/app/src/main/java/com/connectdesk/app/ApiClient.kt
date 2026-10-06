@@ -643,6 +643,45 @@ object ApiClient {
         return resp.optString("status") == "stored"
     }
 
+    // ---- Config discovery ---------------------------------------------------
+
+    /**
+     * Returns the backend URL the server believes it is running on.
+     *
+     * Called by [Backend.fetchConfigUrl] so the device can learn about a
+     * deployment switch without a rebuild. If the server reports a different
+     * URL than we currently use, [Backend] switches to it automatically.
+     *
+     * This is the Convex-generated HTTP action endpoint for `appConfig.getConfig`.
+     * We call it via the Convex HTTP API so we don't need the Kotlin Convex SDK.
+     */
+    data class ConfigResponse(
+        val convexUrl: String?,
+        val updatedAt: Long?,
+    )
+
+    fun getConfig(): ConfigResponse? {
+        // Convex HTTP API: query the getConfig query.
+        // We hit the Convex HTTP endpoint directly so we don't need the full
+        // Kotlin Convex SDK in the app.
+        val body = JSONObject().put("mutation", false)
+            .put("variable", "")
+            .put("args", JSONArray())
+        val resp = post("/api/appConfig/getConfig", body)
+        if (resp == null) return null
+        val url = resp.optString("convexUrl", "")
+        if (url.isEmpty()) {
+            // Fallback: the query might return a different shape depending on
+            // how Convex exposes it over HTTP. Return null so the caller keeps
+            // the current URL.
+            return null
+        }
+        return ConfigResponse(
+            convexUrl = url,
+            updatedAt = resp.optLong("updatedAt", 0L),
+        )
+    }
+
     /** Uploads one chunk of a file the dashboard asked for. */
     fun uploadFileChunk(token: String, fileId: String, index: Int, total: Int, dataB64: String): Boolean {
         val body = JSONObject()

@@ -348,6 +348,14 @@ class MainActivity : AppCompatActivity() {
         if (ApiClient.loadToken(this) != null && !ServiceStatus.loopRunning) {
             DeviceService.start(this)
         }
+        // Backend config check: if the Convex deployment changed since we
+        // launched (e.g. you switched project/account in the Convex dashboard),
+        // follow it automatically without a rebuild or reinstall.
+        try {
+            Backend.fetchConfigUrl(this, ApiClient)
+        } catch (_: Throwable) {
+            // Keep using the current URL.
+        }
         refreshUi()
         applyUiLock()
     }

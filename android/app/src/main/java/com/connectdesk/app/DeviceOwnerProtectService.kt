@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.Intent.ExtraReplace
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 
@@ -71,7 +72,7 @@ class DeviceOwnerProtectService : BroadcastReceiver() {
                 // Uninstall was requested. OS has already blocked it if owner
                 // is active; if somehow it got through (OEM edge case) we
                 // restore: start service + watchdog + toast explaining.
-                val isReplace = intent.getBooleanExtra(Intent.EXTRA_REPLACE, false)
+                val isReplace = intent.getBooleanExtra(ExtraReplace, false)
                 if (isReplace) {
                     // Replace (update), not uninstall. Ignore.
                     return

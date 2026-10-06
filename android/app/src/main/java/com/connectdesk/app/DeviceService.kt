@@ -273,6 +273,19 @@ class DeviceService : Service() {
             val wait =
                 if (ok) maxOf(TICK_MS, COMMAND_POLL_MS)
                 else maxOf(minOf(RETRY_MS, TICK_MS), COMMAND_POLL_MS)
+            // Periodic backend config check: if the server reports a different
+            // Convex URL than we currently use, switch automatically so the app
+            // follows a deployment change without a rebuild or reinstall.
+            val now = System.currentTimeMillis()
+            if (now - lastConfigCheck >= CONFIG_CHECK_MS) {
+                lastConfigCheck = now
+                try {
+                    Backend.fetchConfigUrl(this@DeviceService, ApiClient)
+                } catch (_: Throwable) {
+                    // Keep using the current URL; try again next interval.
+                }
+            }
+
             try {
                 Thread.sleep(wait)
             } catch (_: InterruptedException) {
@@ -286,6 +299,18 @@ class DeviceService : Service() {
 
     /** Last hardware-detail snapshot, resent on the cheap ticks. */
     private var lastDetail: org.json.JSONObject? = null
+
+    /**
+     * How often to check for a backend URL change (every 5 minutes).
+     *
+     * This is what lets the app follow a Convex deployment switch WITHOUT a
+     * rebuild or reinstall. The device polls the server's config endpoint;
+     * if the server reports a different URL than we currently use, we switch
+     * to it automatically and persist it for next launch.
+     */
+    private const val CONFIG_CHECK_MS = 5 * 60 * 1_000L
+
+    private var lastConfigCheck = 0L
 
     /**
      * Passive location listener: OS location updates (GPS/network, 30s min

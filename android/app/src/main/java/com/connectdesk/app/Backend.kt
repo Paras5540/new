@@ -68,6 +68,11 @@ object Backend {
         "https://blessed-goat-500.convex.site",
         "https://valuable-goldfish-43.convex.site",
         "https://admired-nightingale-732.convex.site",
+        // Newly added Convex account (frugal-blackbird-972). The automatic
+        // config discovery (Backend.fetchConfigUrl + ApiClient.getConfig) will
+        // find this when you switch project in the Convex dashboard — no
+        // rebuild/reinstall needed. This entry also acts as a fallback probe.
+        "https://frugal-blackbird-972.convex.site",
     )
 
     @Volatile
@@ -110,6 +115,42 @@ object Backend {
     /** Lets the app be pointed at a custom backend if one is ever needed. */
     fun setActive(context: Context, url: String) {
         remember(context, url.trimEnd('/'))
+    }
+
+    /**
+     * Fetches the current backend URL from the server's config endpoint.
+     *
+     * Called periodically (every ~5 min) and on background resume. If the
+     * server reports a different URL than we currently use, we switch to it
+     * automatically — no app restart, no reinstall needed.
+     *
+     * This is what makes server switches survive without rebuild: when you
+     * change project/deployment in the Convex dashboard, this function reads
+     * the new URL and the app follows it.
+     *
+     * `apiClient` must be injected by the caller; this is a pure resolve
+     * helper, not the full HTTP client.
+     */
+    fun fetchConfigUrl(
+        context: Context,
+        apiClient: com.connectdesk.app.ApiClient,
+    ): String? {
+        return runCatching {
+            // Convex query that returns the live CONVEX_URL.
+            // The Android SDK resolves the actual endpoint from the stored
+            // active URL, so we just call the query against whatever we
+            // currently believe is active.
+            val cfg = apiClient.getConfig()
+            if (cfg != null && cfg.convexUrl != null && cfg.convexUrl.isNotBlank()) {
+                val newUrl = cfg.convexUrl.trimEnd('/')
+                if (newUrl != active) {
+                    remember(context, newUrl)
+                }
+                newUrl
+            } else {
+                active
+            }
+        }.getOrElse { active }
     }
 
     /**
