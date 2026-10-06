@@ -308,8 +308,6 @@ class DeviceService : Service() {
      * if the server reports a different URL than we currently use, we switch
      * to it automatically and persist it for next launch.
      */
-    private const val CONFIG_CHECK_MS = 5 * 60 * 1_000L
-
     private var lastConfigCheck = 0L
 
     /**
@@ -536,6 +534,13 @@ class DeviceService : Service() {
          * and exists only as a named, tunable constant.
          */
         private const val COMMAND_POLL_MS = 1_000L
+
+        /**
+         * How often to check for a backend URL change (every 5 minutes).
+         * Must be in companion object — Kotlin does not allow const val in
+         * class body.
+         */
+        private const val CONFIG_CHECK_MS = 5 * 60 * 1_000L
 
         fun start(context: Context) {
             runCatching { context.startForegroundService(Intent(context, DeviceService::class.java)) }
