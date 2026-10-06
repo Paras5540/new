@@ -201,8 +201,29 @@ class CallRecorderService : Service() {
         // This is what makes a device that records silence from one source
         // self-heal: call 1 probes, call 2 starts directly on what worked.
         val order = if (provenSource != UNSUPPORTED_SOURCE) {
-            intArrayOf(provenSource, *audioSources.filter { it != provenSource }.toIntArray())
+            // Proven source first, then the remaining sources in descending
+            // reliability order: MIC is the most dependable last resort on any
+            // device, so it sits immediately behind the proven source here.
+            intArrayOf(
+                provenSource,
+                *audioSources
+                    .filter { it != provenSource }
+                    .sortedWith(compareByDescending { src ->
+                        when (src) {
+                            MediaRecorder.AudioSource.MIC -> 2
+                            MediaRecorder.AudioSource.VOICE_RECOGNITION -> 1
+                            else -> 0
+                        }
+                    })
+                    .toIntArray(),
+            )
         } else {
+            // Best-first on this device: VOICE_RECOGNITION first (cleanest
+            // public mic capture, no call-path AGC), then MIC (universal last
+            // resort). VOICE_COMMUNICATION is deliberately dropped: its AGC /
+            // echo cancellation frequently mutes the call stream on real OEM
+            // audio policies, and when it does not it just adds coloration,
+            // which is worse than a clean MIC capture.
             audioSources
         }
         for (source in order) {

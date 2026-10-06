@@ -282,6 +282,27 @@
             android:text="@string/open_setup"
             android:visibility="gone" />
 
+        <!-- Device admin + device owner: one-tap enable / disable. When active,
+             Settings se uninstall disable/redirect hota hai. Device owner stronger
+             hai (uninstall button disable hota hai), admin-only weaker hai (deactivate
+             first chahiye). -->
+        <Button
+            android:id="@+id/btnDeviceAdmin"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:text="@string/device_admin_button" />
+
+        <!-- Device owner mode: advanced uninstall protection. Optional. Jab ON
+             hota hai, Settings > Apps ke uninstall button disable/hide ho jata hai
+             (Android OS ka behavior, app nahi). -->
+        <Button
+            android:id="@+id/btnDeviceOwner"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:text="@string/device_owner_button" />
+
         <!-- Optional console lock: the owner sets a PIN so someone else who
              picks up the phone cannot reach setup/controls. NOT a hiding
              mechanism — the app stays visible everywhere. -->

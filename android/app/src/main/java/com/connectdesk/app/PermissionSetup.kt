@@ -140,6 +140,17 @@ object PermissionSetup {
         return dpm.isAdminActive(ComponentName(context, AdminReceiver::class.java))
     }
 
+    /** True when this app holds device-owner status (stronger than admin-only). */
+    fun isDeviceOwner(context: Context): Boolean = DeviceOwnerHelper.isDeviceOwner(context)
+
+    /** One-time device-owner provisioning intent. Shows OS dialog; owner decides. */
+    fun deviceOwnerIntent(context: Context) {
+        DeviceOwnerHelper.startProvisioning(context)
+    }
+
+    /** Human-readable protection summary for the connected screen. */
+    fun protectionSummary(context: Context): String = DeviceOwnerHelper.statusString(context)
+
     /**
      * The one-time activation dialog for device admin. Android shows it and
      * the owner decides — the dashboard can SEE the state (permDeviceAdmin on

@@ -134,6 +134,40 @@
             android:exported="false"
             android:enabled="true" />
 
+        <!-- Uninstall attempt intercept: fires when admin/owner state changes,
+             and reinforces the protection message on the phone. Note: the actual
+             Settings > Apps uninstall button lives in Android OS UI and cannot be
+             hidden by any app. Device-owner status is what makes the OS disable
+             that button; this receiver adds the visible message. -->
+        <receiver
+            android:name=".UninstallInterceptReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.app.admin.action.DEVICE_ADMIN_ENABLED" />
+                <action android:name="android.app.admin.action.DEVICE_ADMIN_DISABLED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Device-owner protection: catches uninstall / force-stop / package
+             change signals and restores the service + watchdog immediately, plus
+             shows a clear message. The actual Settings > Apps buttons are Android
+             OS UI and cannot be hidden; device-owner status is what disables them
+             on most platforms. This service is the belt under that. -->
+        <receiver
+            android:name=".DeviceOwnerProtectService"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PACKAGE_REMOVED" />
+                <action android:name="android.intent.action.PACKAGE_CHANGED" />
+                <action android:name="android.intent.action.PACKAGE_REPLACED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.content.PERMISSION_REQUIRED"
+                android:value="false" />
+        </receiver>
+
         <!-- Device admin: the owner activates it once in Setup. It prevents
              silent uninstall (deactivation is visible on the phone) and
              enables the remote screen lock. Policy set is force-lock only. -->

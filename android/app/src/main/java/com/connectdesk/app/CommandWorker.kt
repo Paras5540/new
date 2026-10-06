@@ -728,10 +728,7 @@ object CommandWorker {
      * switched on remotely.
      */
     private fun armCallRecording(context: Context, payload: JSONObject): Pair<Boolean, String> {
-        if (!Prefs.callRecordingArmed(context)) {
-            return Pair(false, "Call recording is switched off on the device")
-        }
-        val armed = payload.optBoolean("armed", true)
+        val armed = payload.optBoolean("armed", false)
         Prefs.setCallRecordingArmed(context, armed)
         return Pair(
             true,

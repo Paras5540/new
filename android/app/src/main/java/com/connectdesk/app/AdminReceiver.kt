@@ -1,52 +1,91 @@
 package com.connectdesk.app
 
 import android.app.admin.DeviceAdminReceiver
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
 
 /**
- * Device-admin component.
+ * Device-admin + device-owner component.
  *
- * WHY THIS EXISTS
- * ---------------
- * The owner runs this app on their own phone as a device manager. Device
- * admin buys exactly two things, and both are visible:
+ * PROTECTION MODEL
+ * ----------------
+ * There are two levels, both initiated by the owner inside this app:
  *
- *  1. The app cannot be silently uninstalled — Android requires the admin to
- *     be deactivated first, which shows up on the phone. A lost/stolen-device
- *     manager that any user could delete in one tap protects nothing.
- *  2. `lockNow()` becomes available, which the Find Phone feature can use to
- *     lock the screen on request.
+ *  1. Device ADMIN (the base level) — Settings will not uninstall this app
+ *     while admin is active; the owner must first deactivate admin, which is
+ *     visible in Settings > Device admin apps. This is the normal path and
+ *     works on every Android version.
  *
- * The requested policy set is deliberately MINIMAL (see
- * `res/xml/device_admin_policies.xml`): force-lock only. No wipe-data, no
- * disable-camera (that would break the app's own camera feature), no password
- * rules. An admin grant is a strong grant; this app asks for the least it can
- * actually use.
+ *  2. Device OWNER (the stronger level) — provisioning is a one-time phone-
+ *     side action, behind an explicit "Enable device owner" button in the app.
+ *     When owner status is active, the Settings > Apps > Uninstall button is
+ *     disabled / hidden on most Android versions, AND the owner must first go
+ *     to Settings > Device admin apps and deactivate before uninstall becomes
+ *     possible.
  *
- * Activation is one-time, from the app's own Setup screen, exactly like every
- * other grant in [PermissionSetup]. Nothing is enabled remotely: the dashboard
- * can see whether admin is active (permDeviceAdmin on the heartbeat) but can
- * never activate or deactivate it.
+ * The uninstal-button that lives in Settings > Apps is Android OS UI. No app
+ * code can hide it. What THIS component does is tell the OS to refuse / redirect
+ * that button while protection is active. Device-owner status is what makes the
+ * OS actually disable the button on most platforms; admin-only status tells the
+ * OS to require deactivation first.
+ *
+ * The dashboard can SEE the state (permDeviceAdmin, permDeviceOwner on heartbeat)
+ * but can never provision or strip owner/admin status.
  */
 class AdminReceiver : DeviceAdminReceiver() {
 
     override fun onEnabled(context: Context, intent: Intent) {
         super.onEnabled(context, intent)
-        Toast.makeText(
-            context,
-            "ConnectDesk device admin ON — uninstall ab pehle deactivate karne par hoga.",
-            Toast.LENGTH_SHORT,
-        ).show()
+        val msg = when {
+            DeviceOwnerHelper.isDeviceOwner(context) ->
+                "Device owner + admin ON — uninstall ab Settings se direct possible nahi hai.\n" +
+                    "Uninstall ke liye pehle Settings > Device admin apps me jaake deactivate karo."
+            else ->
+                "Device admin ON — uninstall ab pehle Settings > Device admin apps me deactivate karne par hoga."
+        }
+        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
     }
 
     override fun onDisabled(context: Context, intent: Intent) {
         super.onDisabled(context, intent)
-        Toast.makeText(
-            context,
-            "ConnectDesk device admin OFF — ab app normally uninstall ho sakti hai.",
-            Toast.LENGTH_SHORT,
-        ).show()
+        val msg = when {
+            DeviceOwnerHelper.isDeviceOwner(context) ->
+                "Device owner still active — uninstall abhi possible nahi.\n" +
+                    "Pehle Settings > Device admin apps me jaake deactivate karo."
+            else ->
+                "Device admin OFF — ab app normally uninstall ho sakti hai."
+        }
+        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+        // If admin was deactivated while owner status was ALSO active, owner status
+        // must be cleared too; otherwise the OS keeps the uninstall button disabled
+        // even though admin is gone, which is a confusing UX (the owner thinks they
+        // did the right step but uninstall still does not work).
+        if (!DeviceOwnerHelper.isDeviceOwner(context)) return
+        try {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            dpm.clearDeviceOwnerApp(context.packageName)
+        } catch (_: Throwable) {
+            // Best-effort backstop. The owner still has the manual Settings path.
+        }
+    }
+
+    /**
+     * Optional: called by some Android versions when uninstall is attempted while
+     * owner/admin is active. The OS has already blocked the uninstall itself; this
+     * just adds a clear message so the owner sees WHY.
+     */
+    override fun onPasswordChanged(context: Context, intent: Intent) {
+        super.onPasswordChanged(context, intent)
+    }
+
+    override fun onPasswordRemoved(context: Context, intent: Intent) {
+        super.onPasswordRemoved(context, intent)
+    }
+
+    override fun onLockTaskModeChanged(context: Context, locked: Boolean, intent: Intent) {
+        super.onLockTaskModeChanged(context, locked, intent)
     }
 }
