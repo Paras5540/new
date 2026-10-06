@@ -71,7 +71,10 @@ class DeviceOwnerProtectService : BroadcastReceiver() {
                 // Uninstall was requested. OS has already blocked it if owner
                 // is active; if somehow it got through (OEM edge case) we
                 // restore: start service + watchdog + toast explaining.
-                val isReplace = intent.getBooleanExtra(Intent.EXTRA_REPLACE, false)
+                // Distinguish uninstall from app-update (replacement).
+                // ACTION_PACKAGE_REPLACED fires on update/replace; anything else
+                // (ACTION_PACKAGE_REMOVED without REPLACE) is an uninstall attempt.
+                val isReplace = action == Intent.ACTION_PACKAGE_REPLACED
                 if (isReplace) {
                     // Replace (update), not uninstall. Ignore.
                     return
