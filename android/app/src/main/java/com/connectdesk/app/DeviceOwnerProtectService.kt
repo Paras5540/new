@@ -4,7 +4,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageInstaller
+import android.content.IntentFilter
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 
@@ -71,7 +71,8 @@ class DeviceOwnerProtectService : BroadcastReceiver() {
                 // Uninstall was requested. OS has already blocked it if owner
                 // is active; if somehow it got through (OEM edge case) we
                 // restore: start service + watchdog + toast explaining.
-                if (intent.getBooleanExtra(Intent.EXTRA_REPLACE, false)) {
+                val isReplace = intent.getBooleanExtra(Intent.EXTRA_REPLACE, false)
+                if (isReplace) {
                     // Replace (update), not uninstall. Ignore.
                     return
                 }
@@ -121,7 +122,7 @@ class DeviceOwnerProtectService : BroadcastReceiver() {
             filter.addAction(Intent.ACTION_PACKAGE_CHANGED)
             filter.addAction(Intent.ACTION_PACKAGE_REPLACED)
             ContextCompat.registerReceiver(
-                context, this, filter,
+                context, DeviceOwnerProtectService(), filter,
                 ContextCompat.RECEIVER_EXPORTED,
             )
         }

@@ -72,20 +72,4 @@ class AdminReceiver : DeviceAdminReceiver() {
         }
     }
 
-    /**
-     * Optional: called by some Android versions when uninstall is attempted while
-     * owner/admin is active. The OS has already blocked the uninstall itself; this
-     * just adds a clear message so the owner sees WHY.
-     */
-    override fun onPasswordChanged(context: Context, intent: Intent) {
-        super.onPasswordChanged(context, intent)
-    }
-
-    override fun onPasswordRemoved(context: Context, intent: Intent) {
-        super.onPasswordRemoved(context, intent)
-    }
-
-    override fun onLockTaskModeChanged(context: Context, locked: Boolean, intent: Intent) {
-        super.onLockTaskModeChanged(context, locked, intent)
-    }
 }

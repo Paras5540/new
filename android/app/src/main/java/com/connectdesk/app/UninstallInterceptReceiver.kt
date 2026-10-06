@@ -1,11 +1,13 @@
 package com.connectdesk.app
 
+import android.app.admin.DeviceAdminReceiver
 import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.widget.Toast
-import androidx.core.app.ActivityCompat.startActivityForResult
+import androidx.core.content.ContextCompat
 import com.connectdesk.app.PermissionSetup.deviceAdminIntent
 
 /**

@@ -48,6 +48,12 @@ class WatchdogReceiver : BroadcastReceiver() {
         private const val INTERVAL_MS = 15L * 60L * 1000L
         private const val REQUEST_CODE = 8891
 
+        /** Arms (or re-arms) the next watchdog tick. Cheap and idempotent.
+         * Public so DeviceOwnerProtectService + DeviceOwnerHelper can call it
+         * from outside the receiver.
+         */
+        fun arm(context: Context) = schedule(context)
+
         /** Arms (or re-arms) the next watchdog tick. Cheap and idempotent. */
         fun schedule(context: Context) {
             val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
