@@ -355,7 +355,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val discovered = Backend.discoverDashboardServerUrl(this)
             if (discovered != null && discovered != Backend.active) {
-                Backend.remember(this, discovered)
+                Backend.setActive(this, discovered)
             }
         } catch (_: Throwable) {
             // Keep using the current URL.

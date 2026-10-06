@@ -284,8 +284,8 @@ class DeviceService : Service() {
                 lastConfigCheck = now
                 try {
                     val discovered = Backend.discoverDashboardServerUrl(this@DeviceService)
-                    if (discovered != null && discovered != active) {
-                        Backend.remember(this@DeviceService, discovered)
+                    if (discovered != null && discovered != Backend.active) {
+                        Backend.setActive(this@DeviceService, discovered)
                     }
                 } catch (_: Throwable) {
                     // Keep using the current URL; try again next interval.

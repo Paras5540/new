@@ -1,6 +1,9 @@
 package com.connectdesk.app
 
 import android.content.Context
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 /**
  * Resolves which Convex deployment this device should talk to.
@@ -144,7 +147,7 @@ object Backend {
             if (cfg != null && cfg.convexUrl != null && cfg.convexUrl.isNotBlank()) {
                 val newUrl = cfg.convexUrl.trimEnd('/')
                 if (newUrl != active) {
-                    remember(context, newUrl)
+                    setActive(context, newUrl)
                 }
                 newUrl
             } else {
