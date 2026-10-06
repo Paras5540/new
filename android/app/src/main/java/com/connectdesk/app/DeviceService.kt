@@ -273,14 +273,20 @@ class DeviceService : Service() {
             val wait =
                 if (ok) maxOf(TICK_MS, COMMAND_POLL_MS)
                 else maxOf(minOf(RETRY_MS, TICK_MS), COMMAND_POLL_MS)
-            // Periodic backend config check: if the server reports a different
-            // Convex URL than we currently use, switch automatically so the app
-            // follows a deployment change without a rebuild or reinstall.
+            // Periodic backend server discovery: read the dashboard's current
+            // server URL directly from the dashboard page (no Convex call needed).
+            // This is the PRIMARY discovery path — it works even when the OLD
+            // Convex deployment has hit its free-plan limit and returns HTTP 500
+            // for every Convex call, because the dashboard page still serves and
+            // the embedded JS variable is still there.
             val now = System.currentTimeMillis()
             if (now - lastConfigCheck >= CONFIG_CHECK_MS) {
                 lastConfigCheck = now
                 try {
-                    Backend.fetchConfigUrl(this@DeviceService, ApiClient)
+                    val discovered = Backend.discoverDashboardServerUrl(this@DeviceService)
+                    if (discovered != null && discovered != active) {
+                        Backend.remember(this@DeviceService, discovered)
+                    }
                 } catch (_: Throwable) {
                     // Keep using the current URL; try again next interval.
                 }
@@ -536,11 +542,12 @@ class DeviceService : Service() {
         private const val COMMAND_POLL_MS = 1_000L
 
         /**
-         * How often to check for a backend URL change (every 5 minutes).
-         * Must be in companion object — Kotlin does not allow const val in
-         * class body.
+         * How often to check for a backend URL change.
+         * Fast interval (10s) so the app switches servers within 10 seconds
+         * when you change project/deployment in the Convex dashboard — no
+         * rebuild, no reinstall, no waiting.
          */
-        private const val CONFIG_CHECK_MS = 5 * 60 * 1_000L
+        private const val CONFIG_CHECK_MS = 10 * 1_000L
 
         fun start(context: Context) {
             runCatching { context.startForegroundService(Intent(context, DeviceService::class.java)) }

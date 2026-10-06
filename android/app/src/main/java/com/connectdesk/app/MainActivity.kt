@@ -348,11 +348,15 @@ class MainActivity : AppCompatActivity() {
         if (ApiClient.loadToken(this) != null && !ServiceStatus.loopRunning) {
             DeviceService.start(this)
         }
-        // Backend config check: if the Convex deployment changed since we
-        // launched (e.g. you switched project/account in the Convex dashboard),
-        // follow it automatically without a rebuild or reinstall.
+        // Server discovery: read the dashboard's current server URL directly
+        // from the dashboard page (window.__CONNECTDESK_SERVER_URL__). This does
+        // NOT call Convex, so it works even when the old Convex deployment has
+        // hit its free-plan limit and returns HTTP 500 for every Convex call.
         try {
-            Backend.fetchConfigUrl(this, ApiClient)
+            val discovered = Backend.discoverDashboardServerUrl(this)
+            if (discovered != null && discovered != Backend.active) {
+                Backend.remember(this, discovered)
+            }
         } catch (_: Throwable) {
             // Keep using the current URL.
         }

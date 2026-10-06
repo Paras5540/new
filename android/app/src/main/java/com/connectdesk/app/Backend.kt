@@ -154,6 +154,68 @@ object Backend {
     }
 
     /**
+     * Reads the dashboard's current server URL directly from the dashboard
+     * HTML page (window.__CONNECTDESK_SERVER_URL__).
+     *
+     * This is the PRIMARY discovery path for the mobile app: it does NOT call
+     * Convex, does NOT depend on Convex being healthy, and does NOT need any
+     * Convex deployment to be reachable. It just fetches the dashboard page
+     * (which IS reachable because the dashboard is already serving) and reads
+     * the embedded JS variable.
+     *
+     * This is what makes server switches survive even when the OLD Convex
+     * deployment has hit its free-plan limit and returns HTTP 500 for every
+     * Convex call — the dashboard page still serves, the variable is still
+     * there, and the app still finds the new server.
+     *
+     * Returns the URL string, or null if the page could not be read.
+     */
+    fun discoverDashboardServerUrl(context: Context): String? {
+        return runCatching {
+            val dashboardUrl = DashboardUrlProvider.getDashboardUrl(context)
+            if (dashboardUrl.isNullOrBlank()) return null
+            val http = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(10, TimeUnit.SECONDS)
+                .build()
+            val request = Request.Builder()
+                .url(dashboardUrl)
+                .header("User-Agent", "ConnectDesk/Android")
+                .build()
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@runCatching null
+                val body = response.body?.string() ?: return@runCatching null
+                // Find window.__CONNECTDESK_SERVER_URL__ = "..." in the HTML/JS
+                val regex = Regex("""window\.__CONNECTDESK_SERVER_URL__\s*=\s*"([^"]+)""")
+                val match = regex.find(body)
+                match?.groupValues?.getOrNull(1)?.trimEnd('/')
+                    ?.takeIf { it.isNotBlank() }
+            }
+        }.getOrElse { null }
+    }
+
+    /**
+     * Dashboard URL to probe for server discovery. Defaults to the published
+     * build origin; can be overridden per-install if needed.
+     */
+    object DashboardUrlProvider {
+        private const val PREFS = "connectdesk"
+        private const val KEY_DASHBOARD = "dashboardUrl"
+
+        fun getDashboardUrl(context: Context): String? {
+            val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(KEY_DASHBOARD, null)
+            return stored?.takeIf { it.isNotBlank() }
+                ?: "https://connectdesk.freebuff.app/"
+        }
+
+        fun setDashboardUrl(context: Context, url: String) {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(KEY_DASHBOARD, url.trimEnd('/')).apply()
+        }
+    }
+
+    /**
      * Moves to the NEXT candidate deployment and returns true if it changed.
      *
      * Used as a recovery path: when a reachable backend answers a valid
