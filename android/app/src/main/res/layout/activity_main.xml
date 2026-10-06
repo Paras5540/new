@@ -282,6 +282,16 @@
             android:text="@string/open_setup"
             android:visibility="gone" />
 
+        <!-- Optional console lock: the owner sets a PIN so someone else who
+             picks up the phone cannot reach setup/controls. NOT a hiding
+             mechanism — the app stays visible everywhere. -->
+        <Button
+            android:id="@+id/btnUiLock"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:text="@string/ui_lock_button" />
+
         <Button
             android:id="@+id/btnUsageAccess"
             android:layout_width="match_parent"

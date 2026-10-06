@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.telephony.SmsManager
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -550,36 +551,75 @@ object CommandWorker {
             )
         }
 
-        // ANDROID 11+ REFUSES A BACKGROUND CAMERA OPEN, SO DO NOT EVEN TRY.
+        // ANDROID 11+ REFUSES A BACKGROUND CAMERA OPEN.
         //
         // `CameraWorker.capture` opens camera2 from this thread, which belongs
         // to `DeviceService` — a foreground service declared as `dataSync`, not
-        // `camera`. From Android 11 onwards the platform rejects that outright
-        // with a `CameraAccessException` (CAMERA_DISABLED) because the process
-        // has no visible activity and no camera-type foreground service. The
-        // camera never opens, so no frame arrives, and the command reports
-        // failure every single time — which is why taking a photo from the
-        // dashboard appeared to do nothing at all.
+        // `camera`. From Android 11 onwards the platform denies that open with
+        // a `CameraAccessException` unless the app is visibly in the
+        // foreground. Starting a camera-type foreground service from here
+        // would NOT fix it: a service started from the background gets no
+        // camera access on Android 11, Android 12+ forbids the start itself,
+        // and Android 14 throws a SecurityException for a camera-typed service
+        // launched from the background.
         //
-        // The fix is not to ask for a bigger permission: it is to make the app
-        // genuinely foregrounded for the capture, which is what
-        // `CameraConsentActivity` does. The owner taps the notification, the
-        // activity comes up, the camera opens, one frame is taken, the app
-        // closes. That is also the only honest option — the owner is visibly
-        // present while the shutter fires, instead of a photo appearing with
-        // no indication anything was taken.
+        // The one legitimate no-tap path is the app's own ONE-TIME grants:
         //
-        // Below Android 11 the background open is still permitted, so the
-        // direct path is kept there (and tried first, so no tap is needed on
-        // older phones).
+        //   a) "Display over other apps" (SYSTEM_ALERT_WINDOW), granted once
+        //      in Setup. With it the transparent `CameraConsentActivity` can
+        //      be raised directly from here — no notification tap. While the
+        //      activity is up the app IS in the foreground, so the camera
+        //      opens, one frame is taken, and the activity finishes itself.
+        //   b) The app happening to be open on screen right now
+        //      (`MainActivity.isInForeground`) — then the open is while-in-use
+        //      and `CameraWorker.capture` succeeds directly.
+        //
+        // `postPhotoNotice` fires whenever a capture actually happens, so the
+        // shutter is never invisible. Only when neither grant is in place does
+        // the tap-to-allow notification go out as the honest fallback — and
+        // the result message names the Setup toggle that removes it for good.
         if (Build.VERSION.SDK_INT >= 30) {
+            if (Settings.canDrawOverlays(context)) {
+                try {
+                    context.startActivity(
+                        Intent(context, CameraConsentActivity::class.java)
+                            .addFlags(
+                                Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP,
+                            )
+                            .putExtra(CameraConsentActivity.EXTRA_FACING, facing)
+                            .putExtra(CameraConsentActivity.EXTRA_TOKEN, token),
+                    )
+                    postPhotoNotice(context, facing)
+                    return Pair(
+                        true,
+                        "Photo li ja rahi hai — kuch second me dashboard par aa jayegi",
+                    )
+                } catch (_: Throwable) {
+                    // Some OEM skins still refuse the launch; fall through to
+                    // the on-screen attempt and then to the tap fallback.
+                }
+            }
+            if (MainActivity.isInForeground) {
+                val direct = CameraWorker.capture(context, token, facing)
+                if (direct.first) {
+                    // The notice is posted only once the capture actually
+                    // happened, so it never claims a photo was taken when
+                    // none was.
+                    postPhotoNotice(context, facing)
+                    return direct
+                }
+            }
             postTapToAllow(context, token, facing)
             return Pair(
-                true,
-                "Phone par notification aayi hai — camera khulne ke liye Allow dabayein",
+                false,
+                "Phone par 'Display over other apps' off hai — ConnectDesk > Setup " +
+                    "me ek baar on karein; uske baad dashboard ki har photo bina " +
+                    "Allow ke aa jayegi. Abhi Allow wali notification bhej di hai.",
             )
         }
 
+        // Below Android 11 the background open is still permitted, so capture
+        // straight from this service thread.
         val direct = CameraWorker.capture(context, token, facing)
         if (direct.first) {
             // The notice is posted only once the capture actually happened, so

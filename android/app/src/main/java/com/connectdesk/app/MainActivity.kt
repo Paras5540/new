@@ -1,16 +1,22 @@
 package com.connectdesk.app
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.text.InputType
+import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.materialswitch.MaterialSwitch
 import kotlin.concurrent.thread
@@ -53,6 +59,7 @@ class MainActivity : AppCompatActivity() {
     // error, and every other view in this activity is already lateinit.
     private lateinit var tvSetupSummary: TextView
     private lateinit var btnSetup: Button
+    private lateinit var btnUiLock: Button
     private lateinit var btnSelfTest: Button
     private lateinit var switchCalls: MaterialSwitch
     private lateinit var switchCameraLive: MaterialSwitch
@@ -67,6 +74,11 @@ class MainActivity : AppCompatActivity() {
     private val uiHandler = Handler(Looper.getMainLooper())
     private var connected = false
 
+    // Console lock state. Unlocked only until the app leaves the foreground,
+    // so picking the phone back up always asks for the PIN again.
+    private var uiUnlocked = false
+    private var lockOverlay: LinearLayout? = null
+
     /**
      * Runtime permissions and the "all files access" Settings page used to be
      * requested on EVERY resume, because they live inside showConnected().
@@ -78,18 +90,22 @@ class MainActivity : AppCompatActivity() {
     // field could not survive a process restart, so the prompts came back on
     // their own — which is exactly the behaviour this app must not have.
 
-    /**
-     * True while this activity is visible.
-     *
-     * Used by `CommandWorker.capturePhoto` to decide whether a dashboard photo
-     * request can be carried out straight away or has to ask for a tap first.
-     * Since Android 11 the platform denies camera access to an app with no
-     * visible activity, so this flag is what separates "works, and the owner
-     * still gets a notification" from "must prompt".
-     */
-    @Volatile
-    var isInForeground: Boolean = false
-        private set
+    companion object {
+        /**
+         * True while this activity is visible.
+         *
+         * Used by `CommandWorker.capturePhoto` to decide whether a dashboard
+         * photo request can be carried out straight away or has to ask for a
+         * tap first. Since Android 11 the platform denies camera access to an
+         * app with no visible activity, so this flag is what separates
+         * "works, and the owner still gets a notification" from "must
+         * prompt". It lives on the companion object because the command
+         * worker reads it from a service thread, with no activity instance.
+         */
+        @Volatile
+        var isInForeground: Boolean = false
+            private set
+    }
 
     private val syncReadout = object : Runnable {
         override fun run() {
@@ -130,6 +146,7 @@ class MainActivity : AppCompatActivity() {
         btnUsageAccess = findViewById(R.id.btnUsageAccess)
         tvSetupSummary = findViewById(R.id.tvSetupSummary)
         btnSetup = findViewById(R.id.btnSetup)
+        btnUiLock = findViewById(R.id.btnUiLock)
         btnSelfTest = findViewById(R.id.btnSelfTest)
         switchCalls = findViewById(R.id.switchCalls)
         switchCameraLive = findViewById(R.id.switchCameraLive)
@@ -259,11 +276,12 @@ class MainActivity : AppCompatActivity() {
 
         // One place for everything the system will not put in a batch.
         //
-        // Three grants are Settings toggles and cannot appear in the
-        // `requestPermissions` dialog at all: notification listener access,
-        // usage access, and all-files access on Android 11+. Setup offers the
-        // first still-missing one. It never opens a system permission dialog —
-        // those were all collected once, at first launch.
+        // Six grants are Settings toggles or system dialogs and cannot appear
+        // in the `requestPermissions` dialog at all: notification listener
+        // access, usage access, all-files access on Android 11+, display-over-
+        // other-apps, device admin, and the battery-optimization exemption.
+        // Setup offers the first still-missing one. The runtime permission
+        // dialogs were all collected once, at first launch.
         btnSetup.setOnClickListener {
             when {
                 !PermissionSetup.hasNotificationListener(this) ->
@@ -272,10 +290,20 @@ class MainActivity : AppCompatActivity() {
                     }
                 !PermissionSetup.hasAllFilesAccess() ->
                     runCatching { startActivity(PermissionSetup.allFilesAccessIntent(this)) }
+                !PermissionSetup.hasOverlayAccess(this) ->
+                    runCatching { startActivity(PermissionSetup.overlayIntent(this)) }
+                !PermissionSetup.isDeviceAdminActive(this) ->
+                    runCatching { startActivity(PermissionSetup.deviceAdminIntent(this)) }
+                !PermissionSetup.isIgnoringBatteryOptimizations(this) ->
+                    runCatching { startActivity(PermissionSetup.batteryIntent(this)) }
                 else ->
                     runCatching { startActivity(PermissionSetup.usageAccessIntent()) }
             }
         }
+
+        // Console lock: set / change / remove the PIN that guards this screen.
+        // Access control only — the app stays visible everywhere, always.
+        btnUiLock.setOnClickListener { showPinDialog() }
 
         // Debug-only self test. TestMode.enabled is a BuildConfig constant that
         // is false in every release build, so this can never ship.
@@ -305,12 +333,158 @@ class MainActivity : AppCompatActivity() {
             DeviceService.start(this)
         }
         refreshUi()
+        applyUiLock()
     }
 
     override fun onPause() {
         super.onPause()
         isInForeground = false
+        // Console lock: leaving the app re-arms it, so the next resume — even
+        // a resume without activity recreation — asks for the PIN again.
+        if (UiLock.isSet(this)) uiUnlocked = false
+        applyUiLock()
         uiHandler.removeCallbacks(syncReadout)
+    }
+
+    // ---- optional console lock (PIN) ---------------------------------------
+
+    /** Shows the lock surface only when a PIN is set and not yet unlocked. */
+    private fun applyUiLock() {
+        val locked = UiLock.isSet(this) && !uiUnlocked
+        if (!locked) {
+            lockOverlay?.visibility = View.GONE
+            return
+        }
+        if (lockOverlay == null) buildLockOverlay()
+        lockOverlay?.visibility = View.VISIBLE
+    }
+
+    /**
+     * Builds the full-screen lock surface once. It sits on top of the whole
+     * content view with an opaque background and swallows touches, so nothing
+     * behind it is reachable until the PIN is entered.
+     */
+    private fun buildLockOverlay() {
+        val pad = (24 * resources.displayMetrics.density).toInt()
+        val overlay = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#F20B1220"))
+            isClickable = true
+            isFocusable = true
+        }
+        val title = TextView(this).apply {
+            text = getString(R.string.ui_lock_title)
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, pad)
+        }
+        val input = EditText(this).apply {
+            hint = "PIN"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+            gravity = Gravity.CENTER
+        }
+        val unlock = Button(this).apply {
+            text = getString(R.string.ui_lock_unlock)
+            setOnClickListener {
+                if (UiLock.verify(this@MainActivity, input.text?.toString().orEmpty())) {
+                    uiUnlocked = true
+                    input.setText("")
+                    applyUiLock()
+                } else {
+                    input.setText("")
+                    Toast.makeText(this@MainActivity, "Galat PIN", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        overlay.addView(title)
+        overlay.addView(
+            input,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { setMargins(pad, 0, pad, pad / 2) },
+        )
+        overlay.addView(
+            unlock,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { setMargins(pad, 0, pad, 0) },
+        )
+        findViewById<ViewGroup>(android.R.id.content).addView(
+            overlay,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        lockOverlay = overlay
+    }
+
+    /** Set / change / remove the console PIN. Requires the current PIN first. */
+    private fun showPinDialog() {
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val hasPin = UiLock.isSet(this)
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+        }
+        fun pinField(hint: String) = EditText(this).apply {
+            this.hint = hint
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        }
+        val current = pinField("Current PIN")
+        val newPin = pinField("New PIN (min 4 digits)")
+        val confirm = pinField("Confirm new PIN")
+        if (hasPin) box.addView(current)
+        box.addView(newPin)
+        box.addView(confirm)
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle(getString(R.string.ui_lock_title))
+            .setView(box)
+            .setPositiveButton("Save", null)
+            .setNegativeButton("Cancel", null)
+        if (hasPin) builder.setNeutralButton("Remove PIN", null)
+        val dlg = builder.create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (
+                    hasPin &&
+                    !UiLock.verify(this@MainActivity, current.text?.toString().orEmpty())
+                ) {
+                    Toast.makeText(this@MainActivity, "Current PIN galat hai", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val np = newPin.text?.toString().orEmpty()
+                if (np.length < 4) {
+                    Toast.makeText(this@MainActivity, "PIN kam se kam 4 digit ka rakhein", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                if (np != confirm.text?.toString().orEmpty()) {
+                    Toast.makeText(this@MainActivity, "Dono PIN same honi chahiye", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                UiLock.set(this@MainActivity, np)
+                Toast.makeText(
+                    this@MainActivity,
+                    "App lock ON — agli baar app khulne par PIN maangega",
+                    Toast.LENGTH_SHORT,
+                ).show()
+                dlg.dismiss()
+            }
+            if (hasPin) {
+                dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                    if (UiLock.verify(this@MainActivity, current.text?.toString().orEmpty())) {
+                        UiLock.clear(this@MainActivity)
+                        Toast.makeText(this@MainActivity, "App lock OFF", Toast.LENGTH_SHORT).show()
+                        dlg.dismiss()
+                    } else {
+                        Toast.makeText(this@MainActivity, "Current PIN galat hai", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+        dlg.show()
     }
 
     // ---- sign in with the dashboard account ------------------------------

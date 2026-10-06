@@ -552,6 +552,12 @@ object Prefs {
     private const val KEY_CHATS = "chatSync"
     private const val KEY_CLIPBOARD = "clipboardSync"
     private const val KEY_CALL_REC = "callRecordingArmed"
+    /**
+     * The audio source that last produced an audible call recording on this
+     * phone, or -1 while none has been proven. Written by
+     * CallRecorderService, read back at the start of every call.
+     */
+    private const val KEY_CALL_SRC = "callRecorderSource"
 
     fun notifSyncEnabled(context: android.content.Context): Boolean =
         context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
@@ -614,5 +620,20 @@ object Prefs {
         } else {
             CallRecorderService.stop(context)
         }
+    }
+
+    /** The source that last recorded audibly here, or -1 if none proven yet. */
+    fun callRecorderSource(context: android.content.Context): Int =
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .getInt(KEY_CALL_SRC, -1)
+
+    /**
+     * Pin (or clear, with -1) the source that proved itself. Kept in Prefs
+     * rather than a companion var so it survives the process being killed
+     * between calls.
+     */
+    fun setCallRecorderSource(context: android.content.Context, source: Int) {
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .edit().putInt(KEY_CALL_SRC, source).apply()
     }
 }

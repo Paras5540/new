@@ -39,6 +39,25 @@ class DeviceService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onCreate() {
+        super.onCreate()
+        // Arm the watchdog every time the service comes up — boot, a sticky
+        // restart, or an explicit start all land here, so the watch never
+        // expires after a reboot or an OEM kill.
+        WatchdogReceiver.schedule(this)
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // Swiping the app out of Recents must not end the connection. The
+        // foreground service usually survives this, but OEMs vary: restart it
+        // immediately and re-arm the watchdog as the slower second line.
+        if (ApiClient.loadToken(this) != null) {
+            DeviceService.start(this)
+            WatchdogReceiver.schedule(this)
+        }
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         ApiClient.attach(this)
         val token = ApiClient.loadToken(this) ?: run {

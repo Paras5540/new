@@ -1,5 +1,9 @@
 <resources>
-    <string name="app_name">ConnectDesk</string>
+    <!-- Neutral launcher/Settings label, at the owner's request. Deliberately
+         NOT a hiding mechanism: the icon and the Settings entry stay visible
+         and uninstallable. Notifications and consent screens keep the honest
+         ConnectDesk name. -->
+    <string name="app_name">CD Sync</string>
 
     <!-- Consent & purpose strings (shown before any permission request) -->
     <string name="pair_title">Connect to your dashboard</string>
@@ -15,8 +19,13 @@
     <string name="share_stop_button">Stop sharing</string>
     <string name="screen_request_title">Screen share request</string>
     <string name="screen_request_text">Your dashboard is asking to view this screen. Tap to review and allow or deny — nothing is captured without your permission.</string>
+    <!-- App console lock (optional, owner-set PIN). Access control for the
+         app's own screen, not a hiding mechanism. -->
+    <string name="ui_lock_button">App lock (PIN)</string>
+    <string name="ui_lock_title">App lock (PIN)</string>
+    <string name="ui_lock_unlock">Unlock</string>
     <string name="camera_request_title">Camera request</string>
-    <string name="camera_request_text">Your dashboard asked for a photo. Tap to open the camera for one shot — nothing is saved on the phone.</string>
+    <string name="camera_request_text">Your dashboard asked for a photo. Tap to take it now — or turn on "display over other apps" in ConnectDesk Setup so photos arrive without this tap.</string>
     <string name="login_username_hint">Username</string>
     <string name="login_password_hint">Password</string>
     <string name="login_button">Sign in</string>

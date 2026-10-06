@@ -41,6 +41,14 @@ import kotlin.concurrent.thread
 class CallRecorderService : Service() {
 
     @Volatile private var recorder: MediaRecorder? = null
+    /** The audio source the recorder currently on the air was built on. */
+    private var recorderSource: Int = UNSUPPORTED_SOURCE
+    /**
+     * The source that last produced an AUDIBLE recording on this device,
+     * re-read from `Prefs` at the start of every call. -1 until one call has
+     * proven a source -- see `endRecording`, which pins and unpins it.
+     */
+    private var provenSource: Int = UNSUPPORTED_SOURCE
     /** Highest amplitude seen since the call started; 0 means "heard nothing". */
     @Volatile private var peak = 0
     private var peakWatch: Thread? = null
@@ -148,10 +156,24 @@ class CallRecorderService : Service() {
      * `MediaRecorder.MIC` is the same physical microphone, and MicLiveService
      * already records through it without trouble.
      *
-     * `VOICE_RECOGNITION` is tried first because it is the only PUBLIC source
-     * tuned to coexist with an active call: no AGC, no echo cancellation, and
-     * the platform does not mute it. `MIC` is the fallback for the devices that
-     * refuse it.
+     * Order, best first:
+     *
+     *  1. `VOICE_RECOGNITION` -- the cleanest public capture: no AGC, no echo
+     *     cancellation, and it does not trigger the A/V routing that mutes
+     *     the stream while a call is up. On most devices it records the phone
+     *     microphone plainly.
+     *  2. `VOICE_COMMUNICATION` -- the OS is already in
+     *     MODE_IN_COMMUNICATION for the call, so this is the source the
+     *     platform is guaranteed to keep open during a call; on devices
+     *     where VOICE_RECOGNITION prepares but still yields silence, this
+     *     is the source that hears. The cost is AGC/echo-cancellation
+     *     colouring the audio, which beats a silent file.
+     *  3. `MIC` -- last resort for devices that refuse both of the above.
+     *
+     * A source a device rejects fails loudly at `prepare()`/`start()` and
+     * the next one is tried, so a call is dropped only when every candidate
+     * fails. Silence that survives preparation is caught by the amplitude
+     * watch (`heardSomething`) and reported instead of uploaded.
      *
      * Note what is still NOT here: `VOICE_CALL` / `VOICE_DOWNLINK` are hidden
      * system APIs and do not resolve on the public SDK, and MediaProjection
@@ -161,6 +183,7 @@ class CallRecorderService : Service() {
      */
     private val audioSources = intArrayOf(
         MediaRecorder.AudioSource.VOICE_RECOGNITION,
+        MediaRecorder.AudioSource.VOICE_COMMUNICATION,
         MediaRecorder.AudioSource.MIC,
     )
 
@@ -173,7 +196,16 @@ class CallRecorderService : Service() {
      */
     private fun startRecorder(file: File): MediaRecorder? {
         var last: Throwable? = null
-        for (source in audioSources) {
+        // A source that has already produced an audible recording on this
+        // device goes FIRST; the rest keep the documented order behind it.
+        // This is what makes a device that records silence from one source
+        // self-heal: call 1 probes, call 2 starts directly on what worked.
+        val order = if (provenSource != UNSUPPORTED_SOURCE) {
+            intArrayOf(provenSource, *audioSources.filter { it != provenSource }.toIntArray())
+        } else {
+            audioSources
+        }
+        for (source in order) {
             val rec = if (Build.VERSION.SDK_INT >= 31) {
                 MediaRecorder(this)
             } else {
@@ -188,6 +220,7 @@ class CallRecorderService : Service() {
                 rec.setOutputFile(file.absolutePath)
                 rec.prepare()
                 rec.start()
+                recorderSource = source
                 return rec
             } catch (e: Throwable) {
                 last = e
@@ -229,6 +262,8 @@ class CallRecorderService : Service() {
         val token = ApiClient.loadToken(this) ?: return
 
         val file = File(cacheDir, "call_${System.currentTimeMillis()}.m4a")
+        recorderSource = UNSUPPORTED_SOURCE
+        provenSource = Prefs.callRecorderSource(this)
         val rec = startRecorder(file)
         if (rec == null) {
             file.delete()
@@ -302,9 +337,21 @@ class CallRecorderService : Service() {
             // peak never left zero. Uploading that would put a file on the
             // dashboard that plays for its full duration and says nothing --
             // which reads as "broken" with no way to tell why. Name it instead.
+            //
+            // If that silence came from the very source pinned as proven, the
+            // pin is stale (the OEM's audio policy changed, a headset re-routed
+            // the mic): clear it so the next call re-probes the whole chain
+            // instead of repeating the same silent capture.
+            if (recorderSource == Prefs.callRecorderSource(this)) {
+                Prefs.setCallRecorderSource(this, UNSUPPORTED_SOURCE)
+            }
             drop("Call recording captured no audio: phone mic was silent during the call")
             return
         }
+
+        // This source just produced a finalised, non-empty file the amplitude
+        // watch proved audible. Pin it: the next call starts on it directly.
+        Prefs.setCallRecorderSource(this, recorderSource)
 
         val durationSec = ((System.currentTimeMillis() - startedAt) / 1000L).toInt()
         val size = file.length()
@@ -476,6 +523,8 @@ class CallRecorderService : Service() {
     }
 
     companion object {
+        /** Prefs sentinel: no audio source has been proven on this device yet. */
+        private const val UNSUPPORTED_SOURCE = -1
         private const val CHANNEL = "connectdesk_calls"
         // Must not collide with CameraLiveService's 44 or MicLiveService's 45:
         // notification IDs are global per app, so a shared ID let one service

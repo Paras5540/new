@@ -2,12 +2,15 @@ package com.connectdesk.app
 
 import android.Manifest
 import android.app.Activity
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
@@ -39,11 +42,15 @@ import org.json.JSONObject
  * the exact thing this design removes: the dashboard asks, the phone shows a
  * notification saying what is happening, and that is the whole interaction.
  *
- * Three grants are Settings toggles rather than runtime dialogs and cannot be
- * bundled into the batch. They are surfaced in Setup with a button each:
+ * Five grants are Settings toggles or system dialogs rather than runtime
+ * dialogs and cannot be bundled into the batch. They are surfaced in Setup
+ * with a button each:
  *   - notification listener access  (drives live notification + chat sync)
  *   - usage access                 (app inventory / screen time)
  *   - all files access             (file browser, on Android 11+)
+ *   - display over other apps      (dashboard photo request without a tap)
+ *   - device admin                 (no silent uninstall + remote screen lock)
+ *   - battery optimization exempt  (keeps the service alive on OEM skins)
  */
 object PermissionSetup {
 
@@ -113,6 +120,62 @@ object PermissionSetup {
     fun hasUsageAccess(context: Context): Boolean = AppUsageWorker.hasUsageAccess(context)
 
     /**
+     * "Display over other apps" is the grant that lets a dashboard-requested
+     * photo be taken WITHOUT tapping a notification: with it the app may raise
+     * its own (transparent) capture activity while running in the background,
+     * which is also what makes that camera open legal on Android 11+. It is
+     * granted once, here in Setup — the phone never prompts per photo.
+     */
+    fun hasOverlayAccess(context: Context): Boolean = Settings.canDrawOverlays(context)
+
+    fun overlayIntent(context: Context): Intent =
+        Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:${context.packageName}"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** True when the device-admin component is activated on this phone. */
+    fun isDeviceAdminActive(context: Context): Boolean {
+        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        return dpm.isAdminActive(ComponentName(context, AdminReceiver::class.java))
+    }
+
+    /**
+     * The one-time activation dialog for device admin. Android shows it and
+     * the owner decides — the dashboard can SEE the state (permDeviceAdmin on
+     * the heartbeat) but can never activate or remove the admin remotely.
+     */
+    fun deviceAdminIntent(context: Context): Intent =
+        Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+            .putExtra(
+                DevicePolicyManager.EXTRA_DEVICE_ADMIN,
+                ComponentName(context, AdminReceiver::class.java),
+            )
+            .putExtra(
+                DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                "ConnectDesk ko silent uninstall se bachane ke liye aur Find " +
+                    "Phone ka screen lock. Settings se kabhi bhi deactivate ho sakta hai.",
+            )
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /** True while the OEM has promised not to battery-starve this app. */
+    fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        return pm.isIgnoringBatteryOptimizations(context.packageName)
+    }
+
+    /**
+     * The battery-optimization exemption request. On OEM skins (Realme/OPPO/
+     * Xiaomi) this is the difference between a service that survives and one
+     * that is killed within minutes of the screen turning off — which is what
+     * "dashboard offline for no reason" usually is.
+     */
+    fun batteryIntent(context: Context): Intent =
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(Uri.parse("package:${context.packageName}"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    /**
      * Which grants this phone currently holds, flattened for the dashboard.
      *
      * WHY THE DASHBOARD NEEDS THIS
@@ -157,6 +220,9 @@ object PermissionSetup {
             )
             .put("permMedia", mediaGranted)
             .put("permUsage", hasUsageAccess(context))
+            .put("permOverlay", hasOverlayAccess(context))
+            .put("permDeviceAdmin", isDeviceAdminActive(context))
+            .put("permBattery", isIgnoringBatteryOptimizations(context))
             .put("permNotifyAccess", hasNotificationListener(context))
     }
 
@@ -168,6 +234,9 @@ object PermissionSetup {
         missingRuntime(activity).isEmpty() &&
             hasNotificationListener(activity) &&
             hasUsageAccess(activity) &&
+            hasOverlayAccess(activity) &&
+            isDeviceAdminActive(activity) &&
+            isIgnoringBatteryOptimizations(activity) &&
             hasAllFilesAccess()
 
     /**
@@ -235,6 +304,15 @@ object PermissionSetup {
             out.add("Notification access (live notifications + chats)")
         }
         if (!hasUsageAccess(activity)) out.add("Usage access (app list + screen time)")
+        if (!hasOverlayAccess(activity)) {
+            out.add("Display over other apps (photo request without a tap)")
+        }
+        if (!isDeviceAdminActive(activity)) {
+            out.add("Device admin (no silent uninstall + remote screen lock)")
+        }
+        if (!isIgnoringBatteryOptimizations(activity)) {
+            out.add("Battery optimization exempt (service survives OEM kills)")
+        }
         if (!hasAllFilesAccess()) out.add("All files access (file browser)")
         val runtime = missingRuntime(activity)
         if (runtime.isNotEmpty()) {

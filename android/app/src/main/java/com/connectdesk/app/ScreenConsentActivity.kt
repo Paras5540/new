@@ -21,14 +21,15 @@ import android.view.Window
  *
  * But the dialog is only required to OBTAIN consent, not to use it. Once the
  * user has allowed it, `ScreenCaptureService` keeps the granted
- * `MediaProjection` alive (see `grantedProjection`) and Android 14+ lets a
- * single projection back several `VirtualDisplay`s. So the second and later
- * views reuse that consent and go straight to a picture, with no dialog.
+ * `MediaProjection` alive (see `grantedProjection`) and every later session
+ * creates a fresh `VirtualDisplay` from that same projection — on every
+ * supported Android version, 11 through 14+. So the second and later views
+ * reuse that consent and go straight to a picture, with no dialog.
  *
  * The dialog is still shown when there genuinely is no consent yet, when the
- * user revoked it from the system UI, when Android killed the app, and on
- * Android versions older than 14, where the platform refuses to reuse a spent
- * projection. So consent is asked for exactly when it is needed and never
+ * user revoked it from the system UI or tapped Stop on the phone, and when
+ * Android killed the app (the parked consent lives for the life of the
+ * process). So consent is asked for exactly when it is needed and never
  * skipped when it is not — the promise here is "once, not never".
  */
 class ScreenConsentActivity : Activity() {

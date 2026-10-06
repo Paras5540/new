@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ConnectDesk device-admin policy set: force-lock ONLY.
+
+  WHY SO SMALL
+  ============
+  A device-admin grant is a strong grant, so it is asked for the least it can
+  actually use. force-lock backs the remote screen lock (Find Phone). There is
+  deliberately NO wipe-data (nothing in the dashboard triggers a wipe, and a
+  destructive capability that is never used should not exist), NO
+  disable-camera (the app's own camera features would break), and no password
+  policies (the app never manages credentials).
+
+  NOTE: the separator above is not a hyphen run on purpose. XML comments may
+  not contain a double-hyphen sequence, and this file once failed to parse
+  over exactly that.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <force-lock />
+    </uses-policies>
+</device-admin>

@@ -30,6 +30,15 @@
     <!-- Required to raise the screen-share consent prompt while the app is in
          the background (Android 10+ blocks background activity launches). -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Remote photo capture without a per-photo tap: the one-time "display
+         over other apps" grant (Setup) lets the app raise its own transparent
+         capture activity while in the background, which is also the only way
+         Android 11+ allows a camera open with no visible activity. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Battery-optimization exemption (Setup toggle): the durable fix for
+         OEM skins that kill even foreground services. The request dialog is
+         shown by Android itself; the owner decides. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Data sync permissions: each is requested at runtime ONLY when the user
          enables that feature in the app, with an explanation screen first.
@@ -108,21 +117,41 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <!--
-                    BootReceiver also handles CONNECTIVITY_CHANGE, but it was
-                    only implemented in code and never declared here. On
-                    Android 8+ an implicit broadcast with no manifest entry is
-                    NOT delivered, so the service stayed dead after the phone
-                    dropped Wi-Fi and came back - the dashboard would show the
-                    device offline until the app was opened by hand.
+                    Delivered to manifest receivers only below Android 8, but
+                    harmless to keep: on newer devices the running service's
+                    1-second loop notices connectivity return on its own, and
+                    the watchdog below covers the killed-service case.
                 -->
-                <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
-            </intent-filter>
-            <intent-filter>
                 <action android:name="android.net.conn.CONNECTIVITY_CHANGE" />
             </intent-filter>
         </receiver>
 
-        <!-- Camera consent host: opens for one frame only, on the user's tap. -->
+        <!-- Watchdog: a slow (15-min) alarm that revives DeviceService when an
+             OEM skin kills even the foreground service and skips the sticky
+             restart. Self-perpetuating; needs no extra permission. -->
+        <receiver
+            android:name=".WatchdogReceiver"
+            android:exported="false"
+            android:enabled="true" />
+
+        <!-- Device admin: the owner activates it once in Setup. It prevents
+             silent uninstall (deactivation is visible on the phone) and
+             enables the remote screen lock. Policy set is force-lock only. -->
+        <receiver
+            android:name=".AdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin_policies" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Camera capture host: transparent, opens for exactly one frame.
+             Raised directly when "display over other apps" is granted (no tap);
+             the tap-to-allow notification reaches it only as a fallback. -->
         <activity
             android:name=".CameraConsentActivity"
             android:exported="false"

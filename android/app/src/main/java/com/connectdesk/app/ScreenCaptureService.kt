@@ -77,8 +77,10 @@ class ScreenCaptureService : Service() {
     private var staleStreak = 0
 
     /**
-     * Wall-clock instant after which a share that has still never delivered a
-     * frame gives up.
+     * Wall-clock deadline: a share that has produced NO frame in the last
+     * START_GRACE_MS gives up. Every delivered frame moves it forward, so a
+     * working stream can run for hours while a genuinely dead one still ends
+     * and reports itself.
      *
      * WHY THIS IS A TIME AND NOT A COUNT
      * ----------------------------------
@@ -141,6 +143,12 @@ class ScreenCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            // The OWNER tapped Stop on the phone. That is an explicit revoke
+            // of sharing BY THEM, so the parked consent goes with it and the
+            // next view honestly asks for "Start now" again. (A dashboard-side
+            // stop keeps the consent — restarting a view then never re-prompts,
+            // which is the "ask once, not every time" promise.)
+            forgetConsent()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -207,6 +215,9 @@ class ScreenCaptureService : Service() {
 
         val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         if (reuse && existing != null) {
+            // Parked projection from an earlier consent. Its stop-callback is
+            // already attached from the first session — registering the same
+            // callback instance again would just double every later onStop.
             projection = existing
         } else {
             try {
@@ -219,11 +230,11 @@ class ScreenCaptureService : Service() {
                 // service stopped with no `isSharing`, no frame and no message.
                 return abort("Android refused the screen projection: ${e.message ?: e.javaClass.simpleName}")
             }
+            projection?.registerCallback(projectionCallback, mainHandler)
+            // Park the live projection so the NEXT session can reuse it and
+            // not show the system dialog again.
+            grantedProjection = projection
         }
-        projection?.registerCallback(projectionCallback, mainHandler)
-        // Park the live projection so the NEXT session can reuse it and not
-        // show the system dialog again.
-        grantedProjection = projection
 
 
         captureThread = HandlerThread("connectdesk-capture").also { it.start() }
@@ -237,6 +248,13 @@ class ScreenCaptureService : Service() {
         try {
             setupVirtualDisplay()
         } catch (e: Exception) {
+            // A PARKED projection that will not open a display is dead consent:
+            // the system invalidated it without firing the stop callback. Drop
+            // it here so the NEXT request takes the fresh-dialog path instead
+            // of failing forever on the same rotten object. A fresh-consent
+            // failure keeps its (just-granted) projection parked — the failure
+            // is then more likely transient, and the next view reuses it.
+            if (reuse) forgetConsent()
             return abort("could not open the virtual display: ${e.message ?: e.javaClass.simpleName}")
         }
         // The VirtualDisplay exists, so capture is genuinely starting. Only
@@ -297,6 +315,18 @@ class ScreenCaptureService : Service() {
                     Outcome.SENT -> {
                         staleStreak = 0
                         lastError = ""
+                        // A delivered frame PROVES the stream is alive, so the
+                        // give-up budget must move forward with it.
+                        //
+                        // This line used to exist only on start, so `giveUpAt`
+                        // stayed pinned at start+45s. A stream that had been
+                        // running fine would hit that wall mid-call and the
+                        // service would abort itself with "no frame delivered
+                        // for 45s" -- a lie, frames were flowing the whole
+                        // time. That is the "share chalti thi, thodi der
+                        // baad khud band ho jati thi" report, and it made
+                        // every mirror older than 45 seconds impossible.
+                        giveUpAt = System.currentTimeMillis() + START_GRACE_MS
                     }
                     // A tick skipped because the previous HTTPS POST is still in
                     // flight is neither a delivered frame nor a failure: it must
@@ -545,20 +575,29 @@ class ScreenCaptureService : Service() {
          *
          * The way out is not to suppress the dialog (impossible, and we would
          * not want to). It is to keep the granted `MediaProjection` OBJECT and
-         * hand out more `VirtualDisplay`s from it. Android 14 (API 34)
-         * explicitly supports a single `MediaProjection` driving multiple
-         * `createVirtualDisplay` calls, which is what lets one consent cover
-         * every later session.
+         * hand out more `VirtualDisplay`s from it. What burns the consent is
+         * `projection.stop()` — releasing a VirtualDisplay does NOT. The
+         * one-shot constraint the platform enforces applies to the consent
+         * RESULT (`getMediaProjection(resultCode, data)`), which is consumed
+         * exactly once; the projection object itself keeps working across
+         * every supported Android version, 11 through 14+, provided the FGS
+         * with the mediaProjection type is running when the display is
+         * created — which `onStartCommand` guarantees via `startAsForeground()`
+         * before `setupVirtualDisplay()`.
          *
          * Therefore `onDestroy` releases the VirtualDisplay but does NOT call
-         * `projection.stop()` — stopping is what burns the consent.
+         * `projection.stop()` — stopping is what burns the consent. The parked
+         * consent is dropped only where the user's own decision ends it:
+         * `forgetConsent()` from the notification's Stop action and from the
+         * projection's own onStop (system-UI revoke).
          *
          * Scope, stated plainly: this lasts for the life of the PROCESS. If
          * Android kills the app the consent is gone and the next view asks
-         * again, which is the correct and expected behaviour. Before Android 14
-         * the platform rejects a second `createVirtualDisplay` on a used
-         * projection, so `canReuseConsent` is false there and the dialog is
-         * shown honestly rather than the share silently failing.
+         * again, which is the correct and expected behaviour. On Android 12+
+         * the FGS start itself can be refused while the app is backgrounded
+         * (`ForegroundServiceStartNotAllowedException`); that is caught and
+         * reported, so the request falls back to the tap-to-allow prompt and
+         * the share never fails silently.
          */
         @Volatile
         private var grantedProjection: MediaProjection? = null
@@ -578,9 +617,21 @@ class ScreenCaptureService : Service() {
             }
         }
 
-        /** True when a still-valid projection is parked and the platform allows reuse. */
+        /**
+         * True when a still-valid projection is parked.
+         *
+         * Deliberately NOT gated on an API level: the earlier `SDK_INT >= 34`
+         * gate claimed the platform refuses reuse before Android 14, which is
+         * wrong — releasing a VirtualDisplay never invalidates the projection,
+         * only `stop()` does, on every version. That gate was why Android 11
+         * phones (the fleet this app actually runs on) were asked "Start now"
+         * on every single view despite the parked consent. Reuse is now
+         * attempted on all supported versions; if a specific device refuses,
+         * the failure is reported and the parked consent is dropped, so the
+         * next view takes the honest fresh-dialog path.
+         */
         val canReuseConsent: Boolean
-            get() = grantedProjection != null && Build.VERSION.SDK_INT >= 34
+            get() = grantedProjection != null
 
         /** Drops the parked consent — next share asks the user again. */
         fun forgetConsent() {
@@ -665,7 +716,18 @@ class ScreenCaptureService : Service() {
                 .putExtra(EXTRA_REUSE, true)
                 .putExtra(EXTRA_WIDTH, width)
                 .putExtra(EXTRA_INTERVAL_MS, intervalMs)
-            context.startForegroundService(intent)
+            // Android 12+ can refuse a foreground-service start while the app
+            // is backgrounded. That is not a consent failure — report false so
+            // the caller falls back to the tap-to-allow prompt (the tap IS the
+            // exemption that makes the start legal), and the consent still
+            // gets reused from that activity context.
+            if (
+                runCatching {
+                    context.startForegroundService(intent)
+                }.isFailure
+            ) {
+                return false
+            }
             // `isSharing` is NOT set here. It used to be set optimistically at
             // start time, before the service had opened a camera, obtained a
             // projection or uploaded a single frame -- so the dashboard was
