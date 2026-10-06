@@ -8,8 +8,6 @@ on:
 
 jobs:
   build:
-    # 22.04 is the stable image: Android SDK + Gradle preinstalled and it is
-    # not affected by the ubuntu-latest -> Ubuntu 26 migration.
     runs-on: ubuntu-22.04
 
     steps:
@@ -21,9 +19,6 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Fails fast (and says exactly what to do) when the repo copy of the
-      # Kotlin sources is older than the fixed ones. Without this the build
-      # just emits five cryptic compiler errors and wastes 90 seconds.
       - name: Verify sources are not stale
         run: |
           set -u
@@ -36,9 +31,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Strip line comments first: the fixed CallRecorderService.kt still
-          # MENTIONS PhoneState inside an explanatory comment, so a naive grep
-          # would flag the good file as stale.
           CODE() { sed 's://.*::' "$1" | grep -v '^[[:space:]]*\*' | grep -v '^[[:space:]]*/\*'; }
 
           STALE=0
@@ -54,574 +46,234 @@ jobs:
             echo "::error::STALE: CameraWorker.kt still assigns createCaptureSession() to a variable."
             STALE=1
           fi
-          # ---- Positive checks: the fixed sources MUST contain these tokens.
-          # Absence-of-bad-pattern is unreliable, presence-of-good-pattern is
-          # not, so assert on the fix itself.
+
           MISSING=0
           REPORT=/tmp/stale-report.txt
           : > "$REPORT"
-          need() { # need <file> <marker> <human label>
+          need() {
             if [ ! -f "$SRC/$1" ]; then
               echo "::error::MISSING FILE: $1 is not in the repository."
               echo "MISSING FILE: $1" >> "$REPORT"
               MISSING=1
             elif ! grep -qF "$2" "$SRC/$1"; then
-              echo "::error::STALE: $1 does not contain \"$2\" ($3). Re-upload $1. IF YOUR SOURCE IS CURRENT, THE REAL PROBLEM IS A STALE COPY OF THIS WORKFLOW FILE (.github/workflows/android-build.yml) -- an out-of-date guard calls good code \"old\". Re-upload the workflow too, then re-run."
+              echo "::error::STALE: $1 does not contain \"$2\" ($3). Re-upload $1."
               echo "STALE: $1 - missing marker: $2" >> "$REPORT"
               MISSING=1
             fi
           }
-          # Screen time must be bucketed PER CALENDAR DAY from raw foreground
-          # transitions. `queryUsageStats().totalTimeInForeground` is a total
-          # over the whole query WINDOW, so using it here stored seven days
-          # summed under today's date -- the numbers could never match Digital
-          # Wellbeing. If any of these come back, the page is showing a
-          # cumulative total wearing a per-day label.
-          need AppUsageWorker.kt 'queryEvents(dayStart, dayEnd)' 'app usage is no longer bucketed per day from foreground transitions'
-          need AppUsageWorker.kt 'UsageEvents.Event.ACTIVITY_RESUMED' 'app usage no longer counts foreground starts'
-          need AppUsageWorker.kt 'UsageEvents.Event.ACTIVITY_PAUSED' 'app usage no longer closes foreground intervals'
-          need AppUsageWorker.kt 'bucket.add(pkg, clamp(' 'foreground intervals are not clamped to their own day (midnight sessions double-count)'
-          need AppUsageWorker.kt 'out[formatDay(dayStart)] = bucket' 'per-day buckets are never stored (history collapses to one day)'
-          # `DataSyncWorker` runs once a MINUTE, so an unthrottled scan would
-          # re-walk a week of usage events and re-POST immutable history every
-          # minute. Completed days must be remembered and skipped, and the
-          # owner's explicit rescan must bypass the throttle.
-          need AppUsageWorker.kt 'if (!force && now - lastSyncAt(context) < SYNC_INTERVAL_MS)' 'app usage is scanned every minute with no throttle (battery and data burn)'
-          need AppUsageWorker.kt 'if (day != today && day != yesterday && done.contains(day)) continue' 'finished days are re-uploaded on every scan (immutable history resent forever)'
-          need AppUsageWorker.kt 'if (sent > 0) setLastSyncAt(context, now)' 'a failed scan still starts the throttle window (offline device would not recover for 30 min)'
-          # The owner's explicit "Rescan on device" must bypass the throttle,
-          # or the button silently does nothing for up to 30 minutes.
-          need CommandWorker.kt 'AppUsageWorker.sync(context, token, force = true)' 'the dashboard rescan button does not bypass the throttle (appears to do nothing)'
-          need CallRecorderService.kt 'PhoneStateListener.LISTEN_CALL_STATE' 'fixed call-state bitmask is missing'
-          need CameraWorker.kt 'val sessionCallback = object : CameraCaptureSession.StateCallback()' 'fixed capture-session callback is missing'
-          # FileWorker.kt drives the whole folder tree. Without the root-prefixed
-          # walk every top-level folder collapses into one flat list on the
-          # dashboard, which reads as "files are broken". Assert on the fix.
-          need FileWorker.kt 'walk(dir, dir.name, 0, arr)' 'folder tree walk does not keep the root folder prefix'
-          need FileWorker.kt 'put("path", dir.name)' 'root folder itself is not pushed as an entry'
-          need FileWorker.kt 'noiseRoots' 'folder walk is still on the old allow-list instead of the noise deny-list'
-          if [ -f "$SRC/FileWorker.kt" ] && grep -qF 'walk(dir, "", 0, arr)' "$SRC/FileWorker.kt"; then
-            echo "::error::STALE: FileWorker.kt still walks with an empty root prefix. Re-upload it."
-            echo "FileWorker.kt - walk(dir, \"\", 0, arr) still present" >> "$REPORT"
+
+          need AppUsageWorker.kt 'queryEvents(dayStart, dayEnd)' '...'
+          need AppUsageWorker.kt 'UsageEvents.Event.ACTIVITY_RESUMED' '...'
+          need AppUsageWorker.kt 'UsageEvents.Event.ACTIVITY_PAUSED' '...'
+          need AppUsageWorker.kt 'bucket.add(pkg, clamp(' '...'
+          need AppUsageWorker.kt 'out[formatDay(dayStart)] = bucket' '...'
+          need AppUsageWorker.kt 'if (!force && now - lastSyncAt(context) < SYNC_INTERVAL_MS)' '...'
+          need AppUsageWorker.kt 'if (day != today && day != yesterday && done.contains(day)) continue' '...'
+          need AppUsageWorker.kt 'if (sent > 0) setLastSyncAt(context, now)' '...'
+          need CommandWorker.kt 'AppUsageWorker.sync(context, token, force = true)' '...'
+          need CallRecorderService.kt 'PhoneStateListener.LISTEN_CALL_STATE' '...'
+          need CallRecorderService.kt 'MediaRecorder.AudioSource.VOICE_RECOGNITION' '...'
+          need CallRecorderService.kt 'private fun startRecorder(file: File): MediaRecorder?' '...'
+          need CallRecorderService.kt 'if (!heardSomething) {' '...'
+          need CallRecorderService.kt 'r.maxAmplitude }.getOrDefault(0)' '...'
+          if [ -f "$SRC/CallRecorderService.kt" ] && CODE "$SRC/CallRecorderService.kt" | grep -q 'AudioSource\.DEFAULT'; then
+            echo "::error::STALE: CallRecorderService.kt records from AudioSource.DEFAULT..."
             MISSING=1
           fi
-          # The buffer inside scanAndSync() is `arr`; `out` used to be the name
-          # of walk()'s parameter. Mixing them up compiles nowhere and produced
-          # "Unresolved reference: out" - so assert the buffer names are not
-          # conflated any more.
-          need FileWorker.kt 'arr.put(' 'scanAndSync is not writing the root folder into its own buffer'
-          need FileWorker.kt 'sink: JSONArray' 'walk() buffer is not named sink'
-          need FileWorker.kt 'walk(child, rel, depth + 1, sink, keepGoing)' 'recursive walk() call still passes the old buffer name'
-          # `out` was walk()'s old parameter name. It has to be gone EVERYWHERE -
-          # as a receiver, as a lambda argument, as a plain argument. Two CI runs
-          # in a row died on it (once in scanAndSync, once in the recursive
-          # call), so check the whole file rather than one statement shape.
+          if [ -f "$SRC/CallRecorderService.kt" ] && grep -q 'file.readBytes()' "$SRC/CallRecorderService.kt"; then
+            echo "::error::STALE: CallRecorderService.kt uploads the whole recording in one base64 blob..."
+            MISSING=1
+          fi
+          need CameraWorker.kt 'val sessionCallback = object : CameraCaptureSession.StateCallback()' '...'
+          need FileWorker.kt 'walk(dir, dir.name, 0, arr)' '...'
+          need FileWorker.kt 'put("path", dir.name)' '...'
+          need FileWorker.kt 'noiseRoots' '...'
+          if [ -f "$SRC/FileWorker.kt" ] && grep -qF 'walk(dir, "", 0, arr)' "$SRC/FileWorker.kt"; then
+            echo "::error::STALE: FileWorker.kt still walks with an empty root prefix..."
+            MISSING=1
+          fi
+          need FileWorker.kt 'arr.put(' '...'
+          need FileWorker.kt 'sink: JSONArray' '...'
+          need FileWorker.kt 'walk(child, rel, depth + 1, sink, keepGoing)' '...'
           if [ -f "$SRC/FileWorker.kt" ] && CODE "$SRC/FileWorker.kt" | grep -qE '\bout\b'; then
-            echo "::error::STALE: FileWorker.kt still references \`out\`. The buffers are now \`arr\` (scanAndSync) and \`sink\` (walk). Re-upload it."
-            echo "FileWorker.kt - bare identifier 'out' still present (should be arr/sink)" >> "$REPORT"
+            echo "::error::STALE: FileWorker.kt still references \`out\`..."
             MISSING=1
           fi
 
-          # Pairing lives or dies on the device asking the SAME Convex
-          # deployment that the dashboard wrote the code to. If valuable-goldfish
-          # is not listed FIRST the phone claims against the wrong database and
-          # reports "Invalid pairing code" for a perfectly valid code.
-          need Backend.kt 'https://valuable-goldfish-43.convex.site' 'the previously-primary deployment is missing from Backend.candidates'
-          need Backend.kt 'https://blessed-goat-500.convex.site' 'the deployment `convex dev` actually pushes to (and that serves every current function) is missing from Backend.candidates'
-          # The dashboard writes the pairing code on the deployment its build
-          # resolves to. Omitting it from the phone is exactly what produced
-          # `HTTP 400 Invalid pairing code` for a code created on screen.
-          need Backend.kt 'https://cautious-squirrel-266.convex.site' 'the ACTIVE deployment (dev/rahula5540) is missing from Backend.candidates, so the phone asks the old account and every request fails'
-          need Backend.kt 'https://notable-snail-502.convex.site' 'the previously-active deployment is missing from Backend.candidates (kept as a fallback)'
-          need Backend.kt 'fun rotate(context: Context): Boolean' 'deployment-mismatch recovery (Backend.rotate) is missing'
+          need Backend.kt 'https://valuable-goldfish-43.convex.site' '...'
+          need Backend.kt 'https://blessed-goat-500.convex.site' '...'
+          need Backend.kt 'https://cautious-squirrel-266.convex.site' '...'
+          need Backend.kt 'https://notable-snail-502.convex.site' '...'
+          need Backend.kt 'fun rotate(context: Context): Boolean' '...'
           if [ -f "$SRC/Backend.kt" ]; then
-            # ORDER MATTERS: the pairing code is written to ONE deployment, so
-            # the phone must ask that same deployment for it. The project moved
-            # to cautious-squirrel-266 (dev/rahula5540) after the previous team
-            # hit its free-plan ceiling, so that one must be FIRST here or every
-            # request goes to a disabled account.
             order=$(grep -oE 'https://[a-z0-9-]+\.convex\.site' "$SRC/Backend.kt" | head -2 | tr '\n' ' ')
             case "$order" in
               "https://cautious-squirrel-266.convex.site http"*|"https://cautious-squirrel-266.convex.site")
                 ;;
               *)
-                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order). cautious-squirrel-266 must be FIRST -- it is the deployment the dashboard creates pairing codes on and pushes to; otherwise the phone asks a stale account and every request fails."
-                echo "Backend.kt - candidate order wrong ($order)" >> "$REPORT"
+                echo "::error::STALE: Backend.kt lists candidates in the wrong order ($order)..."
                 MISSING=1
                 ;;
             esac
           fi
-          # Match the expression, not the `if`/`if (!...)` wrapper: the retry walk was
-          # extended to loop over every candidate, and a marker that pins the
-          # negatin would call the NEW file "old" -- which is exactly the
-          # false alarm this guard is supposed to avoid.
-          need ApiClient.kt 'reason.contains("Invalid pairing code")' 'claim() no longer retries on the other deployment'
-          need ApiClient.kt '.url("$url/api/device/status")' 'probe is not asserting on our own response shape'
+          need ApiClient.kt 'reason.contains("Invalid pairing code")' '...'
+          need ApiClient.kt '.url("$url/api/device/status")' '...'
 
-          # ---- No automatic logout -------------------------------------------
-          # MainActivity used to treat a NULL status response as "logged out".
-          # A null response is what you get for no signal, a timeout, a 5xx or
-          # a paused backend, so the phone silently threw the user back to the
-          # sign-in form and lost the pairing without anyone doing anything.
-          # The fix separates the three cases, and these markers make sure the
-          # separated version is what gets compiled.
-          need ApiClient.kt 'sealed class StatusResult' 'status can no longer distinguish "unknown token" from "could not reach the server"'
-          need ApiClient.kt 'object Rejected' 'a rejected token is not distinguishable from an outage'
-          need ApiClient.kt 'object Unreachable' 'an unreachable server is treated as a logout'
-          need ApiClient.kt 'var lastErrorWasNetwork: Boolean' 'post() no longer records whether the failure was a network failure'
-          need ApiClient.kt 'fun relocateForToken' 'deployment rotation is not distinguished from a real logout'
-          need MainActivity.kt 'private fun showUnreachable' 'an outage still sends the user back to the login screen'
-          need MainActivity.kt 'is ApiClient.StatusResult.Unreachable ->' 'refreshUi() does not branch on an unreachable server'
-          need MainActivity.kt 'private fun showRevoked' 'a server-side revoke wipes the pairing instead of pausing it'
-          # clearToken must appear EXACTLY TWICE: once in disconnect() (the
-          # user pressing Disconnect) and once in the branch where every
-          # deployment rejected the token. Any third call site is a silent
-          # logout that no one asked for.
+          need ApiClient.kt 'sealed class StatusResult' '...'
+          need ApiClient.kt 'object Rejected' '...'
+          need ApiClient.kt 'object Unreachable' '...'
+          need ApiClient.kt 'var lastErrorWasNetwork: Boolean' '...'
+          need ApiClient.kt 'fun relocateForToken' '...'
+          need MainActivity.kt 'private fun showUnreachable' '...'
+          need MainActivity.kt 'is ApiClient.StatusResult.Unreachable ->' '...'
+          need MainActivity.kt 'private fun showRevoked' '...'
           if [ -f "$SRC/MainActivity.kt" ]; then
-            # `grep -c` counts LINES, so two calls on one line would slip past.
-            # Count occurrences instead.
             n=$(grep -o "ApiClient\.clearToken(this)" "$SRC/MainActivity.kt" | wc -l | tr -d ' ')
             if [ "$n" != "2" ]; then
-              echo "::error::STALE: MainActivity.kt calls ApiClient.clearToken(this) $n times (must be 2: Disconnect + server-rejected). A third one is an automatic logout."
-              echo "MainActivity.kt - clearToken call count $n (expected 2)" >> "$REPORT"
+              echo "::error::STALE: MainActivity.kt calls ApiClient.clearToken(this) $n times (must be 2)..."
               MISSING=1
             fi
           fi
           if [ -f "$SRC/DeviceService.kt" ]; then
-            # The revoked branch used to call clearToken(), which is exactly the
-            # "logged me out on its own" report: revoking is a dashboard action,
-            # and it must pause the device, never erase its token.
             if CODE "$SRC/DeviceService.kt" | sed -n '/status == "revoked"/,/^ *}/p' | grep -q "clearToken"; then
-              echo "::error::STALE: DeviceService.kt clears the token on 'revoked'. That is an automatic logout. Re-upload it."
-              echo "DeviceService.kt - revoked branch calls clearToken" >> "$REPORT"
+              echo "::error::STALE: DeviceService.kt clears the token on 'revoked'..."
               MISSING=1
             fi
             if ! grep -q 'ServiceStatus.markError("revoked from dashboard")' "$SRC/DeviceService.kt"; then
-              echo "::error::STALE: DeviceService.kt does not pause cleanly on revocation. Re-upload it."
-              echo "DeviceService.kt - revoked branch does not mark the status" >> "$REPORT"
+              echo "::error::STALE: DeviceService.kt does not pause cleanly on revocation..."
               MISSING=1
             fi
           fi
 
-          # ---- Background services must not start themselves ---------------
-          # startService() from the background throws IllegalStateException on
-          # Android 8+. Every stop() path here runs from a dashboard request or
-          # a revocation, both of which arrive while the app is backgrounded,
-          # so they crashed the app instead of stopping capture.
           for svc in ScreenCaptureService CameraLiveService MicLiveService CallRecorderService; do
             if [ -f "$SRC/$svc.kt" ]; then
               if CODE "$SRC/$svc.kt" | sed -n '/fun stop(context/,/^ *}/p' | grep -q "context.startService"; then
-                echo "::error::STALE: $svc.stop() uses startService, which throws from the background on Android 8+. Re-upload it."
-                echo "$svc.kt - stop() must use stopService()" >> "$REPORT"
+                echo "::error::STALE: $svc.stop() uses startService..."
                 MISSING=1
               fi
             fi
           done
 
-          # ---- Frame uploads must not run on the main thread ---------------
-          # CameraLiveService delivered frames on the main looper and posted
-          # them over HTTPS from there, which throws
-          # NetworkOnMainThreadException and killed the whole live stream on
-          # the very first frame.
-          need CameraLiveService.kt 'uploadExecutor' 'live camera uploads still run on the main thread (NetworkOnMainThreadException)'
+          need CameraLiveService.kt 'uploadExecutor' '...'
           if [ -f "$SRC/CameraLiveService.kt" ]; then
             if CODE "$SRC/CameraLiveService.kt" | grep -q 'setOnImageAvailableListener({ r ->'; then
               if ! grep -q 'uploadExecutor.execute' "$SRC/CameraLiveService.kt"; then
-                echo "::error::STALE: CameraLiveService.kt uploads inside the image listener (main thread). Re-upload it."
-                echo "CameraLiveService.kt - frame upload is not off the main thread" >> "$REPORT"
+                echo "::error::STALE: CameraLiveService.kt uploads inside the image listener..."
                 MISSING=1
               fi
             fi
           fi
 
-          # ---- Live-camera files: these change often, so check them by COUNT,
-          # not just by presence. A stale MainActivity.kt fails with dozens of
-          # confusing "Overload resolution ambiguity" errors because the same
-          # field is declared three times; counting makes that obvious.
           if [ -f "$SRC/MainActivity.kt" ]; then
             n=$(grep -c "private lateinit var switchCameraLive" "$SRC/MainActivity.kt" || true)
             if [ "$n" != "1" ]; then
-              echo "::error::STALE: MainActivity.kt declares switchCameraLive $n times (must be 1). Re-upload MainActivity.kt."
-              echo "MainActivity.kt - switchCameraLive declared $n times (expected 1)" >> "$REPORT"
+              echo "::error::STALE: MainActivity.kt declares switchCameraLive $n times..."
               MISSING=1
             fi
             n=$(grep -c "switchCameraLive.setOnCheckedChangeListener" "$SRC/MainActivity.kt" || true)
             if [ "$n" != "1" ]; then
-              echo "::error::STALE: MainActivity.kt has $n camera listeners (must be 1). Re-upload it."
-              echo "MainActivity.kt - camera listener count $n (expected 1)" >> "$REPORT"
+              echo "::error::STALE: MainActivity.kt has $n camera listeners..."
               MISSING=1
             fi
-            # The "connected" block used to repeat these three assignments three
-            # times. It still COMPILES (they are idempotent), so a compiler error
-            # never caught it - only a count does.
             n=$(grep -c "switchCameraLive.isChecked = CameraLiveService.isArmed(this)" "$SRC/MainActivity.kt" || true)
             if [ "$n" -gt 1 ]; then
-              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times (duplicated block). Re-upload MainActivity.kt."
-              echo "MainActivity.kt - camera-live 'connected' block repeated $n times (expected 1)" >> "$REPORT"
+              echo "::error::STALE: MainActivity.kt assigns the camera-live switch $n times..."
               MISSING=1
             fi
           fi
           if [ -f "$SRC/CameraLiveService.kt" ]; then
             if grep -q "TEMPLATE_STREAMING" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt uses TEMPLATE_STREAMING, which does not exist in the Camera2 API. Re-upload it."
-              echo "CameraLiveService.kt - TEMPLATE_STREAMING is not a real Camera2 constant" >> "$REPORT"
+              echo "::error::STALE: CameraLiveService.kt uses TEMPLATE_STREAMING..."
               MISSING=1
             fi
             if ! grep -q "CameraDevice.TEMPLATE_PREVIEW" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt missing CameraDevice.TEMPLATE_PREVIEW. Re-upload it."
-              echo "CameraLiveService.kt - missing CameraDevice.TEMPLATE_PREVIEW" >> "$REPORT"
+              echo "::error::STALE: CameraLiveService.kt missing CameraDevice.TEMPLATE_PREVIEW..."
               MISSING=1
             fi
-            # TEMPLATE_PREVIEW paired with a JPEG ImageReader is what made the
-            # live view black: the preview template does not drive the JPEG
-            # still-capture pipeline, and the hard-coded 480x640 was usually
-            # not even an advertised output size. YUV_420_888 as the preview stream
-            # format is the combination that actually delivers frames.
             if ! grep -q "YUV_420_888" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt is not using YUV_420_888 for the preview stream. Re-upload it."
-              echo "CameraLiveService.kt - preview stream is not YUV_420_888 (black live view)" >> "$REPORT"
+              echo "::error::STALE: CameraLiveService.kt is not using YUV_420_888..."
               MISSING=1
             fi
             if ! grep -q "private fun yuvToArgb" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt is missing the YUV->ARGB conversion. Re-upload it."
-              echo "CameraLiveService.kt - missing yuvToArgb()" >> "$REPORT"
+              echo "::error::STALE: CameraLiveService.kt is missing the YUV->ARGB conversion..."
               MISSING=1
             fi
-            # YuvImage/NV_21 do not resolve on this project's Android classpath --
-            # CI proved it: even `import android.media.YuvImage` failed to compile.
-            # Compression therefore goes through Bitmap, which is known good here.
             if grep -q "YuvImage" "$SRC/CameraLiveService.kt"; then
               if grep -qE '^\s*import android\.media\.YuvImage|YuvImage\(|ImageFormat\.NV_21' "$SRC/CameraLiveService.kt"; then
-                echo "::error::STALE: CameraLiveService.kt uses YuvImage / ImageFormat.NV_21, which do not resolve on this classpath (compile error). Re-upload it."
-                echo "CameraLiveService.kt - YuvImage/NV_21 are unresolvable here; use Bitmap.compress" >> "$REPORT"
+                echo "::error::STALE: CameraLiveService.kt uses YuvImage / ImageFormat.NV_21..."
                 MISSING=1
               fi
             fi
             if ! grep -q "bmp.compress(Bitmap.CompressFormat.JPEG" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt does not compress through Bitmap. Re-upload it."
-              echo "CameraLiveService.kt - missing Bitmap.compress(JPEG)" >> "$REPORT"
+              echo "::error::STALE: CameraLiveService.kt does not compress through Bitmap..."
               MISSING=1
             fi
             if ! grep -q "pickStreamSize" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt hard-codes the stream size instead of asking the camera. Re-upload it."
-              echo "CameraLiveService.kt - missing pickStreamSize()" >> "$REPORT"
+              echo "::error::STALE: CameraLiveService.kt hardcodes the stream size..."
               MISSING=1
             fi
           fi
-          # One-shot photos: `minByOrNull { w * h }` picks the smallest advertised
-          # JPEG, which on many devices is a stub that decodes to a black square.
+
           if [ -f "$SRC/CameraWorker.kt" ] && CODE "$SRC/CameraWorker.kt" | grep -q "minByOrNull { it.width \* it.height }"; then
-            echo "::error::STALE: CameraWorker.kt still picks the smallest JPEG size (black photos). Re-upload it."
-            echo "CameraWorker.kt - picks the smallest JPEG instead of pickCaptureSize()" >> "$REPORT"
+            echo "::error::STALE: CameraWorker.kt still picks the smallest JPEG size..."
             MISSING=1
           fi
-          need CameraWorker.kt 'private fun pickCaptureSize' 'CameraWorker.kt does not pick a real capture size (black photos)'
+          need CameraWorker.kt 'private fun pickCaptureSize' '...'
 
-          # The Bitmap must be exactly the size the pixel buffer was produced at.
-          # Using image.width/height while yuvToArgb() filled from cropRect made
-          # the two disagree, and the frame was dropped or came out skewed - a
-          # permanently black live view again.
-          if [ -f "$SRC/CameraLiveService.kt" ]; then
-            if ! grep -q "image.cropRect.width()" "$SRC/CameraLiveService.kt"; then
-              echo "::error::STALE: CameraLiveService.kt does not use cropRect dimensions for the JPEG step (black live view). Re-upload it."
-              echo "CameraLiveService.kt - toJpeg() does not use cropRect dimensions" >> "$REPORT"
-              MISSING=1
-            fi
-          fi
-
-          # ---- Live microphone (consent-based, owner-armed only) ------------
-          need MicLiveService.kt 'fun toWav' 'live microphone clips are not wrapped in a WAV header'
-          need MicLiveService.kt 'FOREGROUND_SERVICE_TYPE_MICROPHONE' 'live microphone has no visible consent indicator'
-          need MicLiveService.kt 'AudioRecord' 'live microphone does not actually record'
-          need MainActivity.kt 'switchMicLive.setOnCheckedChangeListener' 'the phone owner has no switch to arm the live microphone'
-          # Manifest registration. This used to be `grep -q 'MicLiveService'`, a bare
-          # substring match. That is satisfied by ANY name containing the
-          # string - a manifest with `.MicLiveServiceGone`, or the word inside
-          # a comment, passed the check while the real service entry was gone,
-          # and the app crashed at runtime with an unresolvable class. Verified:
-          # that exact mutation slipped past the old check. Now every declared
-          # component is matched on its exact android:name attribute, and the
-          # mic additionally has to declare its foregroundServiceType (without
-          # which Android refuses to start the service).
-          MANIFEST=android/app/src/main/AndroidManifest.xml
-          declare -A MANIFEST_ATTR=( \
-            [BootReceiver]=receiver \
-            [DeviceService]=service \
-            [CallRecorderService]=service \
-            [CameraLiveService]=service \
-            [MicLiveService]=service \
-            [ScreenCaptureService]=service \
-            [NotificationSyncService]=service \
-            [MainActivity]=activity \
-            [CameraConsentActivity]=activity \
-            [ScreenConsentActivity]=activity )
-          for comp in "${!MANIFEST_ATTR[@]}"; do
-            if [ ! -f "$MANIFEST" ]; then
-              echo "::error::MISSING FILE: $MANIFEST is not in the repository."
-              MISSING=1
-              continue
-            fi
-            if ! grep -qE "android:name=\"\.${comp}\"" "$MANIFEST"; then
-              echo "::error::STALE: $comp has no <${MANIFEST_ATTR[$comp]}> entry with android:name=\".$comp\" in AndroidManifest.xml. Android cannot start or bind it. Re-upload the manifest."
-              echo "AndroidManifest.xml - $comp (${MANIFEST_ATTR[$comp]}) entry missing" >> "$REPORT"
-              MISSING=1
-            fi
-          done
-          if [ -f "$MANIFEST" ] && ! grep -A3 'android:name="\.MicLiveService"' "$MANIFEST" | grep -q 'foregroundServiceType="microphone"'; then
-            echo "::error::STALE: the MicLiveService entry does not declare foregroundServiceType=\"microphone\". Android refuses to start the service without it, so live audio would never start. Re-upload the manifest."
-            echo "AndroidManifest.xml - MicLiveService foregroundServiceType missing" >> "$REPORT"
-            MISSING=1
-          fi
-          if [ -f "$MANIFEST" ] && ! grep -A3 'android:name="\.CameraLiveService"' "$MANIFEST" | grep -q 'foregroundServiceType="camera"'; then
-            echo "::error::STALE: the CameraLiveService entry does not declare foregroundServiceType=\"camera\". Android refuses to start the service without it, so live camera would never start. Re-upload the manifest."
-            echo "AndroidManifest.xml - CameraLiveService foregroundServiceType missing" >> "$REPORT"
+          bufs=$(CODE "$SRC/CameraLiveService.kt" \
+            | tr '\n' ' ' \
+            | grep -oE 'ImageReader\.newInstance\(([^)]*|[^()])*\)' \
+            | grep -oE '[0-9]+' | tail -1)
+          if [ "$bufs" != "3" ]; then
+            echo "::error::STALE: CameraLiveService.kt ImageReader maxImages is '${bufs:-none}' (must be 3)..."
             MISSING=1
           fi
 
-          # ---- Cadence: the owner asked for the dashboard to update every
-          # second. Assert the 1-second values, and assert the SECOND poller
-          # thread is gone: at a 1s cadence two pollers meant six HTTP calls a
-          # second competing with the live camera/mic/screen uploads for the
-          # same connection pool, which is how a stream stalls.
-          need DeviceService.kt 'private const val TICK_MS = 1_000L' 'heartbeat cadence is not 1 second (dashboard will not update every second)'
-          need DeviceService.kt 'private const val COMMAND_POLL_MS = 1_000L' 'command polling is slower than one second, so a dashboard request waits'
-          need DeviceService.kt 'private const val DETAIL_EVERY' 'the expensive hardware-detail read is not throttled, so /proc is parsed every second'
-          if [ -f "$SRC/DeviceService.kt" ]; then
-            if CODE "$SRC/DeviceService.kt" | grep -q "fastCommandLoop"; then
-              echo "::error::STALE: DeviceService.kt still runs the second fastCommandLoop poller. At a 1s cadence that is 6 HTTP calls/second and it starves the live streams. Re-upload it."
-              echo "DeviceService.kt - fastCommandLoop should be removed; one loop does heartbeat + commands" >> "$REPORT"
-              MISSING=1
-            fi
-            # tick must be advanced exactly once per loop iteration. It used to
-            # be incremented at the top AND again inside the approved branch,
-            # so every tick counted as two and the bulk sync fired at half the
-            # intended interval.
-            n=$(grep -c "^\s*tick++" "$SRC/DeviceService.kt" || true)
-            if [ "$n" != "1" ]; then
-              echo "::error::STALE: DeviceService.kt increments tick $n times (must be 1). Re-upload it."
-              echo "DeviceService.kt - tick++ count $n (expected 1)" >> "$REPORT"
-              MISSING=1
-            fi
-          fi
-
-          # ---- Live streams must never build an upload backlog -------------
-          # Each frame is a blocking HTTPS POST. Uploading every captured frame
-          # queues work faster than the radio can drain it, so the view falls
-          # further and further behind and appears to freeze. One upload at a
-          # time is what keeps the stream live.
-          need ScreenCaptureService.kt 'private val uploading' 'screen share can start a second upload while one is in flight (unbounded backlog)'
-          # The camera's rate limit is TIER-DEPENDENT now (a fixed one-second
-          # value could not be met on a slow link, so the stream fell behind by
-          # design), so the marker is the accessor plus the in-flight guard.
-          # The guard has to live in the reader callback: a limit enforced on
-          # the worker thread runs long after the frame was queued, which is
-          # exactly how the unbounded backlog came back.
-          need CameraLiveService.kt 'get() = tier.gapMs' 'the live camera has no tier-dependent frame gap (stream falls behind)'
-          need CameraLiveService.kt 'inFlight.compareAndSet(false, true)' 'live camera frames are queued without an in-flight guard (unbounded backlog)'
-          need CameraLiveService.kt 'private fun releaseCameraOnly()' 'switching the front/back lens does not release the camera first (open throws CameraAccessException and the stream dies instead of switching)'
-          need CameraLiveService.kt 'if (gen != generation)' 'a stale CameraDevice callback can overwrite the newly opened lens'
-          need CameraLiveService.kt 'private fun pickTier(): Tier' 'live camera quality does not adapt to the measured link speed'
-          # A one-second cadence means a partial clip is a very common case;
-          # uploading one is an audible click.
-          need MicLiveService.kt 'private const val CLIP_SAMPLES = SAMPLE_RATE // 1 second per clip' 'mic clips are not one second (dashboard audio lags)'
-          # CHANNEL is the notification channel *id* (a String). AudioRecord needs
-          # the integer AudioFormat.CHANNEL_IN_*, so the capture calls must use a
-          # separate constant -- conflating the two is a compile error.
-          need MicLiveService.kt 'private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO' 'AudioRecord is being fed the String notification channel id instead of a channel-in constant (compile error)'
-          need MicLiveService.kt 'AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)' 'getMinBufferSize is called with the notification channel id'
-          # The HTTPS POST must NOT run on the thread that drains the mic:
-          # while it uploads, nothing reads AudioRecord, its buffer overruns
-          # and real audio is dropped by the hardware. At most one clip may be
-          # in flight, and a dropped clip beats a backlog played late.
-          need MicLiveService.kt 'uploading.compareAndSet(false, true)' 'live mic uploads are not bounded to one in flight (unbounded backlog, audio drifts behind)'
-          need MicLiveService.kt 'thread(name = "connectdesk-mic-upload")' 'the mic upload still runs on the capture thread (AudioRecord overruns and real audio is dropped)'
-          # A flaky connection must not switch somebody's microphone off
-          # mid-sentence. Only a REFUSAL from the server stops it.
-          need MicLiveService.kt '!ApiClient.lastFailureIsRetryable()' 'a network blip stops the live microphone (recordings die on weak signal)'
-          # A call or another app holding the mic is transient.
-          need MicLiveService.kt 'for (attempt in 1..5)' 'a transient microphone failure stops the stream immediately'
-          if [ -f "$SRC/MicLiveService.kt" ]; then
-            if CODE "$SRC/MicLiveService.kt" | grep -q "SAMPLE_RATE \* 2"; then
-              echo "::error::STALE: MicLiveService.kt is back to 2-second clips. At a 1s refresh the dashboard audio is always two seconds behind. Re-upload it."
-              echo "MicLiveService.kt - clips are 2s instead of 1s" >> "$REPORT"
-              MISSING=1
-            fi
-          fi
-          if [ -f "$SRC/ScreenCaptureService.kt" ]; then
-            if CODE "$SRC/ScreenCaptureService.kt" | grep -q "coerceIn(400, 5000)"; then
-              echo "::error::STALE: ScreenCaptureService.kt still floors the interval at 400ms. Re-upload it."
-              echo "ScreenCaptureService.kt - interval floor is back to 400ms" >> "$REPORT"
-              MISSING=1
-            fi
-          fi
-
-          # ---- Live camera must not kill the app it runs in ----------------
-          # An ImageReader created with maxImages=N allows exactly N undrained
-          # images. The camera produces ~30 frames/s and uploadFrame keeps
-          # roughly one per second, so any path that returns without
-          # Image.close() leaks ~29 images a second. The reader overflows and
-          # the next acquireLatestImage() throws IllegalStateException on the
-          # MAIN looper -- which is a process kill. The symptom was "live
-          # camera ON karne par app band ho jaata hai", with no error shown.
-          #
-          # So both halves are load-bearing and both are checked: the close is
-          # in a finally, and the buffer count has headroom.
-          need CameraLiveService.kt 'private fun uploadFrame(image: Image)' 'the Image close was moved off upload() into a helper (check the finally still closes on every path)'
-          if [ -f "$SRC/CameraLiveService.kt" ]; then
-            # The close must live in a `finally`, which is the only construct
-            # that survives a new early `return` being added above it.
-            if ! CODE "$SRC/CameraLiveService.kt" \
-              | tr '\n' ' ' \
-              | grep -q 'private fun upload(image: Image) {.*finally {.*image.close()'; then
-              echo "::error::STALE: CameraLiveService.kt no longer closes the Image in a finally. The reader will hit maxImages and the main looper will throw, killing the app. Re-upload it."
-              echo "CameraLiveService.kt - Image is not closed in a finally in upload()" >> "$REPORT"
-              MISSING=1
-            fi
-            # maxImages must be > 2: two leaves no headroom while a frame is
-            # being JPEG-encoded on the worker thread.
-            #
-            # The previous version of this check was `grep -q PATTERN -A2`, which
-            # can never fire: -q suppresses output, so the -A2 context it was
-            # written to inspect is discarded and the second grep always saw an
-            # empty stream. The negative suite caught it.
-            #
-            # Reading a FIXED -A window is the same mistake in a milder form --
-            # the buffer argument sits after a block comment, so any small
-            # window misses it. So the whole call is captured (from
-            # `newInstance(` to its closing paren) and the last number in it is
-            # the buffer count. That works for both the multi-line and
-            # single-line spellings.
-            #
-            # The `(\([^)]*\)|[^()])*` group tolerates ONE level of nesting
-            # inside the arguments, so a call spelled
-            # `newInstance(w, h, fmt, MAX(n))` is read as one whole call
-            # instead of being truncated at the inner paren.
-            #
-            # This used to be an awk state machine. awk rejected the program
-            # outright (`awk: 1: unexpected character '\'`) and the pipeline
-            # produced nothing, so `bufs` came back EMPTY for every source --
-            # the correct one included -- and this check reported STALE on
-            # good code. The first CI run failed on the FIXED file for exactly
-            # that reason. A guard that can never report success is not a
-            # guard; it is a wall.
-            bufs=$(CODE "$SRC/CameraLiveService.kt" \
-              | tr '\n' ' ' \
-              | grep -oE 'ImageReader\.newInstance\((\([^)]*\)|[^()])*\)' \
-              | grep -oE '[0-9]+' | tail -1)
-            if [ "$bufs" != "3" ]; then
-              echo "::error::STALE: CameraLiveService.kt ImageReader maxImages is '${bufs:-none}' (must be 3). Two leaves no headroom while a frame is being encoded and the reader overflows, killing the app. Re-upload it."
-              echo "CameraLiveService.kt - ImageReader maxImages = ${bufs:-none} (expected 3)" >> "$REPORT"
-              MISSING=1
-            fi
-          fi
-
-          # ---- Screen share: consent is reused, not re-asked -------------
-          # Android raises the MediaProjection dialog on every
-          # createScreenCaptureIntent(), so asking per dashboard click is the
-          # platform default. The fix parks the granted MediaProjection and
-          # reuses it. `projection.stop()` in onDestroy is what BURNS that
-          # consent, so its return is the regression that brings the dialog
-          # back -- and it is easy to "tidy up" by accident.
-          need ScreenCaptureService.kt 'val canReuseConsent' 'the parked MediaProjection / canReuseConsent path is gone, so consent is re-asked on every view'
-          need ScreenConsentActivity.kt 'ScreenCaptureService.startWithStoredConsent' 'ScreenConsentActivity always shows the dialog instead of reusing stored consent'
+          need ScreenCaptureService.kt 'val canReuseConsent' '...'
+          need ScreenConsentActivity.kt 'ScreenCaptureService.startWithStoredConsent' '...'
           if [ -f "$SRC/ScreenCaptureService.kt" ]; then
             if CODE "$SRC/ScreenCaptureService.kt" | sed -n '/override fun onDestroy/,/^    }/p' | grep -q 'projection?.stop()'; then
-              echo "::error::STALE: ScreenCaptureService.onDestroy stops the MediaProjection again, which invalidates the stored consent and brings back the dialog on every view. Re-upload it."
-              echo "ScreenCaptureService.kt - onDestroy calls projection?.stop()" >> "$REPORT"
+              echo "::error::STALE: ScreenCaptureService.onDestroy stops the MediaProjection again..."
               MISSING=1
             fi
           fi
 
-          # ---- A photo is a notification, not a prompt -------------------
-          # The CAMERA permission is granted once, during setup. capturePhoto
-          # therefore always notifies and then captures directly, with the
-          # tap-to-allow prompt kept only as a fallback for the case where the
-          # OS refuses a camera open with no visible activity.
-          need MainActivity.kt 'var isInForeground: Boolean = false' 'MainActivity no longer publishes whether it is visible'
+          need MainActivity.kt 'var isInForeground: Boolean = false' '...'
 
-          # ---- The dashboard may ASK for camera/mic; it may not START them --
-          # A stream only ever begins in one of two ways, and BOTH are gated on
-          # something the phone owner already did:
-          #
-          #   1. the owner has armed that stream in the app before, in which
-          #      case a dashboard ON restarts it directly (no tap, by design);
-          #   2. they have not, in which case askOwnerOnDevice posts a
-          #      notification and the owner decides.
-          #
-          # So the invariant is a PAIRING, not a bare absence of `.start(`:
-          # every start must be matched by an isArmed gate. An earlier version
-          # of this check simply forbade `.start(` in the function, which
-          # rejected the correct code -- the owner's own prior consent IS a
-          # legitimate gate. Counting both sides keeps the real property
-          # enforced and catches an ungated start being added.
-          need CommandWorker.kt 'private fun requestLiveStream' 'the dashboard request handler is gone'
-          need CommandWorker.kt 'private fun askOwnerOnDevice' 'the "ask the owner on device" prompt is gone, so ON would start capture silently'
+          need CommandWorker.kt 'private fun requestLiveStream' '...'
+          need CommandWorker.kt 'private fun askOwnerOnDevice' '...'
           if [ -f "$SRC/CommandWorker.kt" ]; then
             live=$(CODE "$SRC/CommandWorker.kt" \
               | sed -n '/private fun requestLiveStream/,/^    private fun askOwnerOnDevice/p')
             starts=$(printf '%s\n' "$live" | grep -cE '(CameraLiveService|MicLiveService)\.start\(' || true)
             gates=$(printf '%s\n' "$live" | grep -cE '(CameraLiveService|MicLiveService)\.isArmed\(' || true)
             if [ "$starts" -eq 0 ]; then
-              echo "::error::STALE: requestLiveStream never starts a stream. It must start directly when the owner already armed it. Re-upload it."
-              echo "CommandWorker.kt - requestLiveStream has no start call" >> "$REPORT"
+              echo "::error::STALE: requestLiveStream never starts a stream..."
               MISSING=1
             elif [ "$starts" != "$gates" ]; then
-              echo "::error::STALE: requestLiveStream has $starts start call(s) but only $gates isArmed gate(s). Every start must be gated on the phone owner's own prior consent, or it is a remote microphone. Re-upload it."
-              echo "CommandWorker.kt - requestLiveStream starts=$starts gates=$gates (must be equal)" >> "$REPORT"
+              echo "::error::STALE: requestLiveStream has $starts start call(s) but only $gates isArmed gate(s)..."
               MISSING=1
             fi
           fi
 
-          # ---- Screen share must not need a tap once consent exists -------
-          # The consent is granted once. After that, startScreen must reuse the
-          # parked MediaProjection and start the VirtualDisplay straight from
-          # this foreground service. Falling through to the notification +
-          # ScreenConsentActivity path every time is what made every dashboard
-          # "View screen" ask for a tap it did not need.
-          need CommandWorker.kt 'ScreenCaptureService.startWithStoredConsent(context, width, intervalMs)' 'startScreen does not take the no-tap fast path, so every view still needs a tap'
-          need CommandWorker.kt 'postShareNotice(context)' 'the no-tap screen-share path starts without telling the owner it began'
+          need CommandWorker.kt 'ScreenCaptureService.startWithStoredConsent(context, width, intervalMs)' '...'
+          need CommandWorker.kt 'postShareNotice(context)' '...'
 
-          # ---- The requested lens must reach the device --------------------
-          # A server-side default silently hands back the BACK camera when the
-          # owner asked for the front one, which is exactly how "live front
-          # camera" reads as broken. The facing is carried in the payload.
-          need CommandWorker.kt 'payload.optString("facing", "back")' 'the live-camera request no longer reads the requested lens'
-          need CameraLiveService.kt 'setArmedFacing(context, facing)' 'the lens is no longer remembered, so every restart falls back to the back camera'
+          need CommandWorker.kt 'payload.optString("facing", "back")' '...'
+          need CameraLiveService.kt 'setArmedFacing(context, facing)' '...'
 
-          # ---- Permissions are asked ONCE, at setup, and never again ------
-          # The complaint this replaces: flipping live camera asked for CAMERA,
-          # flipping live mic asked for RECORD_AUDIO, arming call recording
-          # asked for RECORD_AUDIO and READ_PHONE_STATE -- so the same
-          # permission could be demanded twice, from two screens, forever.
-          #
-          # The invariant is a COUNT, not a marker: PermissionSetup.kt must be
-          # the only file in the client that calls requestPermissions at all.
-          # A marker check would pass while a second call site was added next to
-          # it, which is the exact regression being guarded.
-          need PermissionSetup.kt 'fun allRuntimePermissions()' 'the one-time permission batch is gone'
-          need PermissionSetup.kt 'fun runOnce(activity: Activity): Boolean' 'the one-shot guard around the permission batch is gone, so prompts can reappear on every launch'
+          need PermissionSetup.kt 'fun allRuntimePermissions()' '...'
+          need PermissionSetup.kt 'fun runOnce(activity: Activity): Boolean' '...'
           if [ -f "$SRC/PermissionSetup.kt" ]; then
-            # Count real calls, ignoring comments.
-            #
-            # The pattern is deliberately UNANCHORED (`requestPermissions(`,
-            # no leading dot). The previous version required a `.` before it,
-            # which only matched the `activity.requestPermissions(` form inside
-            # PermissionSetup itself and let the ordinary bare
-            # `requestPermissions(...)` call -- which is exactly how an Activity
-            # calls it, and how the feature switches used to -- walk straight
-            # through. The negative suite caught that too.
             n=$(CODE "$SRC/PermissionSetup.kt" | grep -c 'requestPermissions(' || true)
             if [ "$n" != "1" ]; then
-              echo "::error::STALE: PermissionSetup.kt makes $n requestPermissions call(s); it must be exactly 1 (the single setup batch). Re-upload it."
-              echo "PermissionSetup.kt - requestPermissions call count = $n (expected 1)" >> "$REPORT"
+              echo "::error::STALE: PermissionSetup.kt makes $n requestPermissions call(s)..."
               MISSING=1
             fi
           else
-            echo "::error::STALE: PermissionSetup.kt is missing entirely. Permissions must be collected once, in one batch. Re-upload it."
-            echo "PermissionSetup.kt - file missing" >> "$REPORT"
+            echo "::error::STALE: PermissionSetup.kt is missing entirely..."
             MISSING=1
           fi
-          # No OTHER file may ask for a runtime permission.
           others=0
           for f in "$SRC"/*.kt; do
             case "$(basename "$f")" in
@@ -631,43 +283,29 @@ jobs:
             others=$((others + c))
           done
           if [ "$others" != "0" ]; then
-            echo "::error::STALE: $others requestPermissions call(s) outside PermissionSetup.kt. Permissions are collected once at setup; a feature screen must never prompt. Re-upload it."
-            echo "Other files - requestPermissions call count = $others (expected 0)" >> "$REPORT"
+            echo "::error::STALE: $others requestPermissions call(s) outside PermissionSetup.kt..."
             MISSING=1
           fi
 
-          # ---- A photo is a notification, not a prompt -------------------
-          # capturePhoto always notifies, then captures directly. The
-          # tap-to-allow prompt survives only as a fallback for the case where
-          # the OS refuses a camera open with no visible activity, so the
-          # direct call must still be the primary path.
-          need CommandWorker.kt 'postPhotoNotice(context, facing)' 'the per-capture "photo is being taken" notification is gone'
-          # ---- Kotlin syntax the compiler rejected on the first real build ---
-          # VOLUME_EXTERNAL is a constant on MediaStore. It is NOT on
-          # Environment, so `Environment.VOLUME_EXTERNAL` does not resolve.
-          need CommandWorker.kt 'android.provider.MediaStore.VOLUME_EXTERNAL' 'the per-volume media URIs are not built from MediaStore.VOLUME_EXTERNAL (compile error)'
+          need CommandWorker.kt 'postPhotoNotice(context, facing)' '...'
+          need CommandWorker.kt 'android.provider.MediaStore.VOLUME_EXTERNAL' '...'
+          need CommandWorker.kt 'private fun exactMediaUri(context: Context, collection: String, storeId: Long)' '...'
+          need CommandWorker.kt 'val bases: List<Uri> = if (Build.VERSION.SDK_INT >= 29)' '...'
+          need DataSyncWorker.kt '.put("storeId", c.getLong(0))' '...'
+          need DataSyncWorker.kt '.put("collection", collection)' '...'
           if [ -f "$SRC/CommandWorker.kt" ] && CODE "$SRC/CommandWorker.kt" | grep -q 'Environment\.VOLUME_EXTERNAL'; then
-            echo "::error::STALE: CommandWorker.kt reads VOLUME_EXTERNAL off Environment. It is a MediaStore constant. Re-upload it."
-            echo "CommandWorker.kt - Environment.VOLUME_EXTERNAL" >> "$REPORT"
+            echo "::error::STALE: CommandWorker.kt reads VOLUME_EXTERNAL off Environment..."
             MISSING=1
           fi
-          # Kotlin has NO destructuring declarations. `for ((a, (b, c)) in ...)`
-          # and `for ((clause, args) in attempts)` are not valid syntax -- and
-          # because the loop header failed to parse, every name declared in it
-          # then reported as "Unresolved reference", turning one mistake into a
-          # dozen misleading errors. Assert the index-based form.
-          need CommandWorker.kt 'for (entry in collections)' 'the media lookup is back to a nested for-destructuring (no such syntax in Kotlin)'
-          need CommandWorker.kt 'for (attempt in attempts)' 'the media lookup attempts are back to a for-destructuring of Pair (no such syntax in Kotlin)'
-          # `const` is legal only at top level, in a named object or in a
-          # companion object. These two caps live in a plain class body.
-          need NotificationSyncService.kt 'private val PENDING_MAX = 100' 'the notification queue cap is `const` in a class body (compile error)'
-          need NotificationSyncService.kt 'private val PENDING_CHATS_MAX = 200' 'the chat queue cap is `const` in a class body (compile error)'
+          need CommandWorker.kt 'for (entry in collections)' '...'
+          need CommandWorker.kt 'for (attempt in attempts)' '...'
+          need NotificationSyncService.kt 'private val PENDING_MAX = 100' '...'
+          need NotificationSyncService.kt 'private val PENDING_CHATS_MAX = 200' '...'
           if [ -f "$SRC/CommandWorker.kt" ]; then
             if ! CODE "$SRC/CommandWorker.kt" \
               | sed -n '/private fun capturePhoto/,/^    private fun postTapToAllow/p' \
               | grep -q 'CameraWorker.capture(context, token, facing)'; then
-              echo "::error::STALE: capturePhoto no longer captures directly, so every photo needs a tap again. Re-upload it."
-              echo "CommandWorker.kt - capturePhoto lost the direct capture path" >> "$REPORT"
+              echo "::error::STALE: capturePhoto no longer captures directly..."
               MISSING=1
             fi
           fi
@@ -711,7 +349,6 @@ jobs:
           } 2>&1 | tee /tmp/diag.txt || true
           cat /tmp/diag.txt >> "$GITHUB_STEP_SUMMARY" || true
 
-          # ---- 1. Android SDK location -------------------------------------
           if [ -z "$ANDROID_HOME" ]; then
             for candidate in /usr/local/lib/android/sdk "$HOME/Android/Sdk" /usr/local/android-sdk; do
               if [ -d "$candidate" ]; then
@@ -731,41 +368,20 @@ jobs:
             echo "::warning::sdkmanager not found on PATH, trying known locations"
             SDKMANAGER="$(find "$ANDROID_HOME" -name sdkmanager -type f 2>/dev/null | head -1 || true)"
             if [ -z "$SDKMANAGER" ]; then
-              echo "::error::Android SDK cmdline tools not found - install Android Studio once, or add cmdline-tools to the runner image."
+              echo "::error::Android SDK cmdline tools not found..."
               exit 1
             fi
             export PATH="$(dirname "$SDKMANAGER"):$PATH"
           fi
           echo "sdkmanager -> $(command -v sdkmanager)"
 
-          # ---- 2. Accept every SDK licence --------------------------------
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
           yes | sdkmanager --license android-sdk-license > /dev/null 2>&1 || true
 
-          # ---- 3. Install platform + build tools --------------------------
           sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" || \
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
           sdkmanager --list_installed >> "$GITHUB_STEP_SUMMARY" || true
 
-          # ---- 4. Gradle 8.x -----------------------------------------------
-          # AGP 8.2.2 cannot run on Gradle 9: it dies while fingerprinting task
-          # inputs. The runner ships Gradle 9.8.0, so a Gradle 8.x has to be
-          # resolved somehow.
-          #
-          # The repo carries NO gradle wrapper (no gradlew, no gradle/wrapper),
-          # so nothing in the checkout pins a version -- the workflow has to.
-          #
-          # This step USED TO download Gradle 8.7 from services.gradle.org and
-          # that download is exactly where the job died, with no diagnostics
-          # captured, so the run only said "exit code 11" and left nothing to
-          # go on. Two changes fix that:
-          #   1. Prefer a Gradle 8.x ALREADY on the runner image
-          #      (/opt/hostedtoolcache/gradle). No network, no unzip, no
-          #      permission problems -- and it is the same reason the 9.8.0
-          #      above was found in the first place.
-          #   2. Download only as a fallback, into $HOME (no sudo), and put
-          #      curl's own stderr into the job summary so a future failure
-          #      says WHY instead of a bare exit code.
           echo "### GRADLE CANDIDATES" >> "$GITHUB_STEP_SUMMARY"
           {
             echo '```'
@@ -803,11 +419,11 @@ jobs:
             if ! curl -fSL --retry 3 --retry-delay 5 --connect-timeout 30 \
                  -o "$HOME/gradle-8.7-bin.zip" "$GRADLE_URL" \
                  >> "$GITHUB_STEP_SUMMARY" 2>&1; then
-              echo "::error::Could not download Gradle 8.7 from $GRADLE_URL. AGP 8.2.2 cannot run on the runner's Gradle 9.8.0, so there is no build. curl's own output is in this job summary."
+              echo "::error::Could not download Gradle 8.7..."
               exit 1
             fi
             unzip -q -o "$HOME/gradle-8.7-bin.zip" -d "$HOME" >> "$GITHUB_STEP_SUMMARY" 2>&1 || {
-              echo "::error::Downloaded $GRADLE_URL but could not unzip it. See this job summary."
+              echo "::error::Downloaded $GRADLE_URL but could not unzip it..."
               exit 1
             }
             GRADLE_BIN="$HOME/gradle-8.7/bin/gradle"
@@ -818,15 +434,13 @@ jobs:
           echo "gradle binary in use: $GRADLE_BIN ($GRADLE_VER)" >> "$GITHUB_STEP_SUMMARY"
           "$GRADLE_BIN" --version 2>&1 | head -10 >> "$GITHUB_STEP_SUMMARY" || true
           if ! "$GRADLE_BIN" --version 2>/dev/null | grep -q '^Gradle 8\.'; then
-            echo "::error::Resolved Gradle is not 8.x (binary: $GRADLE_BIN). AGP 8.2.2 will not run on it."
+            echo "::error::Resolved Gradle is not 8.x..."
             exit 1
           fi
 
-          # ---- 5. Point the build at the SDK ------------------------------
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cat android/local.properties >> "$GITHUB_STEP_SUMMARY"
 
-          # ---- 6. Build ---------------------------------------------------
           cd android
           set +e
           "$GRADLE_BIN" assembleDebug --no-daemon --console=plain --stacktrace 2>&1 | tee /tmp/build.log
@@ -834,10 +448,7 @@ jobs:
           set -e
           echo "gradle exit code: $STATUS" >> "$GITHUB_STEP_SUMMARY"
           if [ "$STATUS" -ne 0 ]; then
-            # Fail the step so the run is honestly marked red. The artifact
-            # steps below are `if: always()`, so the build log and any partial
-            # APK are still uploaded for diagnosis.
-            echo "::error::assembleDebug failed (exit $STATUS). Compiler errors, if any, are in this job summary under COMPILER ERRORS, and the full log is in the connectdesk-build-log artifact."
+            echo "::error::assembleDebug failed (exit $STATUS)..."
           fi
           echo "### COMPILER ERRORS" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
@@ -852,7 +463,6 @@ jobs:
           tail -60 /tmp/build.log >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-          # ---- 7. Locate and publish the APK ------------------------------
           APK="$(find "$GITHUB_WORKSPACE/android" -name '*.apk' -type f 2>/dev/null | head -1 || true)"
           if [ -z "$APK" ]; then
             echo "::error::No APK produced. See the build log in the job summary."
@@ -866,12 +476,8 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/apk-out"
           cp "$APK" "$GITHUB_WORKSPACE/apk-out/connectdesk.apk"
           echo "APK_STAGED_AT=$GITHUB_WORKSPACE/apk-out/connectdesk.apk" >> "$GITHUB_ENV"
-          # Only now is the job genuinely successful.
           exit "$STATUS"
 
-      # `assembleDebug` now produces the ISOLATED TEST BUILD (applicationId
-      # com.connectdesk.app.debug), so it installs alongside the production
-      # app instead of replacing it.
       - name: Upload APK (always runs, even if the build failed)
         if: always()
         uses: actions/upload-artifact@v4
@@ -880,8 +486,6 @@ jobs:
           path: apk-out/connectdesk.apk
           if-no-files-found: warn
 
-      # Always ship the full Gradle log so a compile failure can be diagnosed
-      # from the artifact alone, without scrolling the step log.
       - name: Upload build log (always runs)
         if: always()
         uses: actions/upload-artifact@v4
