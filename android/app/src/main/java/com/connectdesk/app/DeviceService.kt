@@ -279,6 +279,11 @@ class DeviceService : Service() {
             // Convex deployment has hit its free-plan limit and returns HTTP 500
             // for every Convex call, because the dashboard page still serves and
             // the embedded JS variable is still there.
+            //
+            // It runs every CONFIG_CHECK_MS (10 s), so a switch made on the
+            // dashboard reaches the phone inside 30 seconds — no rebuild, no
+            // reinstall, no app restart.
+            var switched = false
             val now = System.currentTimeMillis()
             if (now - lastConfigCheck >= CONFIG_CHECK_MS) {
                 lastConfigCheck = now
@@ -286,6 +291,7 @@ class DeviceService : Service() {
                     val discovered = Backend.discoverDashboardServerUrl(this@DeviceService)
                     if (discovered != null && discovered != Backend.active) {
                         Backend.setActive(this@DeviceService, discovered)
+                        switched = true
                     }
                 } catch (_: Throwable) {
                     // Keep using the current URL; try again next interval.
@@ -293,7 +299,14 @@ class DeviceService : Service() {
             }
 
             try {
-                Thread.sleep(wait)
+                // A switch takes effect IMMEDIATELY: skipping this sleep sends
+                // the very next heartbeat to the new server instead of making
+                // the phone wait out the old one's backoff. Waiting would add up
+                // to RETRY_MS on top of the poll interval — and a switch usually
+                // happens right after a failed tick, which is exactly the slow
+                // path. `switched` is true at most once per CONFIG_CHECK_MS, so
+                // this can never turn into a busy loop.
+                if (!switched) Thread.sleep(wait)
             } catch (_: InterruptedException) {
                 return
             }
@@ -307,12 +320,14 @@ class DeviceService : Service() {
     private var lastDetail: org.json.JSONObject? = null
 
     /**
-     * How often to check for a backend URL change (every 5 minutes).
+     * Last time the dashboard page was fetched to look for a backend switch.
      *
-     * This is what lets the app follow a Convex deployment switch WITHOUT a
-     * rebuild or reinstall. The device polls the server's config endpoint;
-     * if the server reports a different URL than we currently use, we switch
-     * to it automatically and persist it for next launch.
+     * Cadence is [CONFIG_CHECK_MS] — 10 seconds, not minutes. This is what
+     * lets the app follow a dashboard server switch WITHOUT a rebuild or a
+     * reinstall: the dashboard publishes its own backend as
+     * `window.__CONNECTDESK_SERVER_URL__` in its HTML, the phone reads that
+     * (no Convex call, so it works while the old deployment answers HTTP 500),
+     * and [Backend.setActive] persists it for the next launch.
      */
     private var lastConfigCheck = 0L
 

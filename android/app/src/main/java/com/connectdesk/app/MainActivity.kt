@@ -107,6 +107,14 @@ class MainActivity : AppCompatActivity() {
         @Volatile
         var isInForeground: Boolean = false
             private set
+
+        /**
+         * How often the visible app re-reads the dashboard page to pick up a
+         * backend switch: 10 seconds, so a switch on the dashboard reaches the
+         * phone inside the promised 30-second window even when the foreground
+         * service is not running.
+         */
+        private const val DISCOVERY_MS = 10_000L
     }
 
     private val syncReadout = object : Runnable {
@@ -118,6 +126,42 @@ class MainActivity : AppCompatActivity() {
                 append(ServiceStatus.summary())
             }
             uiHandler.postDelayed(this, 3_000)
+        }
+    }
+
+    /**
+     * Follows the dashboard onto whichever backend it is connected to.
+     *
+     * Two things were wrong with doing this once, inline, in `onResume`:
+     *
+     *  1. `Backend.discoverDashboardServerUrl` is a blocking OkHttp call, and
+     *     Android throws `NetworkOnMainThreadException` for any socket touched
+     *     on the main thread. The `catch (_: Throwable)` swallowed it, so from
+     *     the Activity the phone NEVER switched — the try/catch looked like
+     *     safety while hiding the fact that the work never happened.
+     *  2. One check per resume means a dashboard switch while the app sits
+     *     open is not noticed until the user leaves and comes back.
+     *
+     * So it now runs on a worker thread and repeats every [DISCOVERY_MS]. The
+     * next tick is scheduled only after the current one FINISHES, so a slow
+     * network can never stack overlapping fetches; and `isInForeground` gates
+     * it so a tick scheduled just before `onPause` cannot keep the activity
+     * alive after it is gone.
+     */
+    private val serverDiscovery = object : Runnable {
+        override fun run() {
+            if (!isInForeground) return
+            Thread {
+                try {
+                    val discovered = Backend.discoverDashboardServerUrl(applicationContext)
+                    if (discovered != null && discovered != Backend.active) {
+                        Backend.setActive(applicationContext, discovered)
+                    }
+                } catch (_: Throwable) {
+                    // Keep using the current URL; the next tick retries.
+                }
+                if (isInForeground) uiHandler.postDelayed(this, DISCOVERY_MS)
+            }.start()
         }
     }
 
@@ -311,10 +355,10 @@ class MainActivity : AppCompatActivity() {
         // hidden so that state is visible in the UI too.
         btnDeviceAdmin.setOnClickListener { toggleDeviceAdmin() }
 
-        // Device owner: stronger uninstall protection (Settings > Apps uninstall
-        // button disable/hide hota hai). Optional, ek baar enable karne ke baad
-        // uninstall ke liye pehle Settings > Device admin apps me deactivate karna
-        // padega. Android ke saath provisioning dialog bs ek baar aata hai.
+        // Device owner: the ONLY thing that makes Android disable the
+        // Settings > Apps Uninstall button. This no longer fires an admin
+        // dialog — that could never grant owner status, which is why the
+        // uninstall tap kept bouncing to "deactivate the device admin first".
         btnDeviceOwner.setOnClickListener { toggleDeviceOwner() }
 
         // Console lock: set / change / remove the PIN that guards this screen.
@@ -352,14 +396,9 @@ class MainActivity : AppCompatActivity() {
         // from the dashboard page (window.__CONNECTDESK_SERVER_URL__). This does
         // NOT call Convex, so it works even when the old Convex deployment has
         // hit its free-plan limit and returns HTTP 500 for every Convex call.
-        try {
-            val discovered = Backend.discoverDashboardServerUrl(this)
-            if (discovered != null && discovered != Backend.active) {
-                Backend.setActive(this, discovered)
-            }
-        } catch (_: Throwable) {
-            // Keep using the current URL.
-        }
+        // Off the main thread, and repeated every DISCOVERY_MS while visible.
+        uiHandler.removeCallbacks(serverDiscovery)
+        uiHandler.post(serverDiscovery)
         refreshUi()
         applyUiLock()
     }
@@ -372,6 +411,7 @@ class MainActivity : AppCompatActivity() {
         if (UiLock.isSet(this)) uiUnlocked = false
         applyUiLock()
         uiHandler.removeCallbacks(syncReadout)
+        uiHandler.removeCallbacks(serverDiscovery)
     }
 
     // ---- optional console lock (PIN) ---------------------------------------
@@ -676,6 +716,10 @@ class MainActivity : AppCompatActivity() {
     private fun updateDeviceOwnerButton() {
         if (!::btnDeviceOwner.isInitialized) return
         if (PermissionSetup.isDeviceOwner(this)) {
+            // Keep the package-manager block in force. It is idempotent and
+            // cheap, so doing it on every refresh guarantees the button is
+            // disabled again after an app update or an OEM settings reset.
+            DeviceOwnerHelper.blockUninstallIfOwner(this)
             btnDeviceOwner.text = getString(R.string.device_owner_active)
             btnDeviceOwner.isEnabled = false // cannot re-enable while active
             btnDeviceOwner.setBackgroundColor(0xFF1E3A1E.toInt())
@@ -687,25 +731,82 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Device-owner enable / disable from inside the app.
+     * Why the Uninstall button is still there, and the one thing that hides it.
      *
-     * Enabling is a one-time provisioning action: Android shows its own dialog
-     * and the owner decides. Disabling is done via admin deactivation (the
-     * admin button above) — device owner without admin is not a thing, so
-     * turning admin off also drops owner status (see AdminReceiver.onDisabled).
-     * There is no separate "turn off device owner" button because that would
-     * weaken uninstall protection without the owner knowing.
+     * `ACTION_ADD_DEVICE_ADMIN` — what this button used to fire — grants
+     * ADMIN only, and admin is exactly what makes Settings bounce an Uninstall
+     * tap to "deactivate the device admin first". The button itself is Android
+     * OS UI: no app can remove it, and the OS disables it only for a DEVICE
+     * OWNER. Android will not hand owner status to an app it is running, so the
+     * app gives the owner the exact command instead of opening another admin
+     * dialog that cannot deliver what it promises.
+     */
+    private fun showDeviceOwnerGuide() {
+        val command = DeviceOwnerHelper.deviceOwnerAdbCommand(this)
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, pad / 2, 0, 0)
+        }
+        box.addView(
+            TextView(this).apply {
+                text = command
+                textSize = 14f
+                typeface = android.graphics.Typeface.MONOSPACE
+                setTextIsSelectable(true)
+                setPadding(pad / 2, pad / 2, pad / 2, pad / 2)
+                setBackgroundColor(0xFF121212.toInt())
+                setTextColor(0xFF9FE8B0.toInt())
+            },
+        )
+        AlertDialog.Builder(this)
+            .setTitle(R.string.device_owner_guide_title)
+            .setMessage(R.string.device_owner_guide_body)
+            .setView(box)
+            .setPositiveButton(R.string.device_owner_copy) { _, _ ->
+                runCatching {
+                    val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    cm.setPrimaryClip(
+                        android.content.ClipData.newPlainText("connectdesk-dpm", command),
+                    )
+                    Toast.makeText(this, R.string.device_owner_copied, Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton(R.string.device_owner_guide_admin) { _, _ ->
+                runCatching { startActivity(PermissionSetup.deviceAdminIntent(this)) }
+            }
+            .setNeutralButton(R.string.device_owner_guide_cancel, null)
+            .show()
+    }
+
+    /**
+     * Device-owner state, from inside the app.
+     *
+     * NOT a provisioning toggle any more. It used to fire
+     * `ACTION_ADD_DEVICE_ADMIN`, which grants admin and nothing else — so the
+     * owner ended up in a state where the Uninstall tap still bounced to
+     * "deactivate the device admin first" while the button label claimed the
+     * uninstall option was hidden. Android will not grant owner status to an
+     * app it is running, so this now shows the one external command that does
+     * it ([showDeviceOwnerGuide]) and, once owner status IS held, keeps the
+     * package-manager uninstall block switched on.
+     *
+     * Owner status without admin is not a thing, so deactivating admin (the
+     * admin button above) also drops owner status — see AdminReceiver.onDisabled.
      */
     private fun toggleDeviceOwner() {
         if (PermissionSetup.isDeviceOwner(this)) {
+            DeviceOwnerHelper.blockUninstallIfOwner(this)
             Toast.makeText(
                 this,
                 R.string.device_owner_active,
                 Toast.LENGTH_LONG,
             ).show()
+            updateDeviceOwnerButton()
             return
         }
-        PermissionSetup.deviceOwnerIntent(this)
+        showDeviceOwnerGuide()
     }
 
     /**

@@ -57,16 +57,56 @@ object DeviceOwnerHelper {
      * OS, not by this app, so the owner always sees it and decides.
      */
     fun startProvisioning(context: Context) {
-        val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val adminIntent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
             .putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, component(context))
             .putExtra(
                 DevicePolicyManager.EXTRA_ADD_EXPLANATION,
-                "ConnectDesk ko device owner banao — iske baad Settings se uninstall" +
-                    " direct possible nahi hoga jab tak pehle admin deactivate na karo.",
+                "ConnectDesk ko DEVICE ADMIN banao. Ye sirf admin grant karta hai — " +
+                    "Android koi installed app ko andar se device OWNER nahi bana " +
+                    "sakta, aur uninstall button sirf owner par disable hota hai. " +
+                    "Owner banane ka command 'Device owner' button ke dialog me " +
+                    "milta hai.",
             )
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ContextCompat.startActivity(context, adminIntent, null)
+    }
+
+    /**
+     * The exact ADB command that grants DEVICE-OWNER status.
+     *
+     * WHY THIS CANNOT BE DONE FROM INSIDE THE APP
+     * --------------------------------------------
+     * [startProvisioning] fires `ACTION_ADD_DEVICE_ADMIN`, and that is the only
+     * grant Android will hand to an app it is running. Admin alone is what made
+     * Settings redirect the Uninstall tap to "deactivate the device admin
+     * first" — it stops nothing and hides nothing.
+     *
+     * The Uninstall button in Settings > Apps is OS UI: no app can hide it, and
+     * the only thing that makes the OS disable it is DEVICE-OWNER status. Owner
+     * status is granted from outside the package — ADB, or QR / zero-touch
+     * provisioning during device setup — which is why the app hands the user
+     * the command instead of pretending to grant it.
+     */
+    fun deviceOwnerAdbCommand(context: Context): String =
+        "adb shell dpm set-device-owner " +
+            "${context.packageName}/${AdminReceiver::class.java.name}"
+
+    /**
+     * Blocks uninstall of this package at the package-manager level, so the
+     * Settings > Apps Uninstall button has nothing left to do when tapped.
+     *
+     * `setUninstallBlocked` is callable only by a device or profile owner, so
+     * this is a guarded no-op for admin-only installs — the state the phone is
+     * in until [deviceOwnerAdbCommand] has actually been run. It is idempotent,
+     * so callers can invoke it on every refresh.
+     */
+    fun blockUninstallIfOwner(context: Context): Boolean {
+        if (!isDeviceOwner(context)) return false
+        return runCatching {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            dpm.setUninstallBlocked(component(context), context.packageName, true)
+            true
+        }.getOrDefault(false)
     }
 
     /**
@@ -93,15 +133,20 @@ object DeviceOwnerHelper {
      * Human-readable summary for the connected screen.
      *
      * Returns one of:
-     *  - "Device owner ON — uninstall hidden"
-     *  - "Device admin ON — uninstall needs deactivation"
-     *  - "Device admin OFF — uninstall visible"
+     *  - "Device owner ON — Uninstall button disabled"
+     *  - "Device admin ON — uninstall pehle deactivate karne par"
+     *  - "Device admin OFF — uninstall visible hai"
+     *
+     * Deliberately does NOT claim that admin hides the button: admin-only is
+     * what produced the "deactivate the device admin first" redirect, and
+     * promising otherwise is what made it look like a bug.
      */
     fun statusString(context: Context): String {
         return if (isDeviceOwner(context)) {
-            "Device owner ON — uninstall hidden (Settings pe disable hai)"
+            "Device owner ON — Settings ka Uninstall button disabled hai"
         } else if (isAdminActive(context)) {
-            "Device admin ON — uninstall pehle deactivate karne par hoga"
+            "Device admin ON — uninstall pehle deactivate karna padega " +
+                "(button hide karne ke liye Device owner command chahiye)"
         } else {
             "Device admin OFF — uninstall visible hai"
         }

@@ -25,7 +25,7 @@ object ApiClient {
     // Resolved automatically by Backend so a dev -> production deployment
     // switch never breaks an already-installed app.
     val BASE_URL: String
-        get() = Backend.active ?: Backend.candidates.first()
+        get() = Backend.active ?: Backend.preferred
 
     /**
      * Probes a candidate deployment.
@@ -156,6 +156,25 @@ object ApiClient {
                         "$serverMsg (HTTP ${resp.code})"
                     } else {
                         "Server returned HTTP ${resp.code}"
+                    }
+                    // A 5xx is the DEPLOYMENT failing, not the request: Convex
+                    // answers 500 for a disabled account (free-plan ceiling), a
+                    // paused deployment, or one with no code pushed to it, and
+                    // no amount of retrying the same URL fixes that. Re-resolve
+                    // to another healthy deployment and try again, so the user
+                    // sees a working app instead of "Server returned HTTP 500"
+                    // on every screen. Bounded: the retry only happens when the
+                    // active URL actually changed, so one dead server can never
+                    // turn into a loop.
+                    if (resp.code >= 500) {
+                        val ctx = appContext
+                        if (ctx != null) {
+                            val previous = BASE_URL
+                            val recovered = Backend.resolve(ctx, ::probe)
+                            if (recovered != null && recovered != previous) {
+                                return post(path, body)
+                            }
+                        }
                     }
                     return null
                 }

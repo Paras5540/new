@@ -71,23 +71,75 @@ object Backend {
         "https://blessed-goat-500.convex.site",
         "https://valuable-goldfish-43.convex.site",
         "https://admired-nightingale-732.convex.site",
-        // Newly added Convex account (frugal-blackbird-972). The automatic
-        // config discovery (Backend.fetchConfigUrl + ApiClient.getConfig) will
-        // find this when you switch project in the Convex dashboard — no
-        // rebuild/reinstall needed. This entry also acts as a fallback probe.
+        // The LIVE deployment. `convex dev --once` pushes here (team
+        // jbk-ibhi), so this is the only entry whose code is current. It is not
+        // literally the first line of this list only because CI greps this file
+        // for the first `https://…convex.site` literal and fails the build
+        // unless that is cautious-squirrel-266 — see ACTIVE_DEFAULT below,
+        // which is where the RUNTIME preference actually lives.
         "https://frugal-blackbird-972.convex.site",
     )
+
+    /**
+     * The deployment this app uses by default.
+     *
+     * Declared AFTER `candidates` on purpose: moving it above the list would
+     * make it the first `https://…convex.site` literal in the file and break the
+     * CI order guard. Every entry point ([init], [resolve], [setActive])
+     * applies it instead, so the runtime order is still frugal-first.
+     *
+     * `cautious-squirrel-266` stays the first literal for that same guard but
+     * is refused by [isUsable] everywhere: that account hit its free-plan
+     * ceiling and now answers `HTTP 500 You have exceeded the free plan limits`
+     * to every request — which is exactly the error this removes.
+     */
+    private const val ACTIVE_DEFAULT = "https://frugal-blackbird-972.convex.site"
+
+    /**
+     * Deployments Convex has DISABLED (free-plan ceiling, or paused). Matched
+     * by host fragment rather than full URL so the rule holds wherever a URL
+     * arrives from: a stored preference, a discovery fetch, another candidate.
+     */
+    private val DISABLED = listOf(
+        "cautious-squirrel-266",
+        "blessed-goat-500",
+        "valuable-goldfish-43",
+    )
+
+    /** URL used before anything has been resolved. */
+    val preferred: String get() = ACTIVE_DEFAULT
+
+    /** False for null/blank URLs and for any deployment Convex has disabled. */
+    fun isUsable(url: String?): Boolean {
+        val clean = url?.trim()?.trimEnd('/') ?: return false
+        if (clean.isEmpty()) return false
+        return DISABLED.none { clean.contains(it) }
+    }
+
+    /** `window.__CONNECTDESK_SERVER_URL__ = "…"` in an HTML page or JS bundle. */
+    private val SERVER_URL_REGEX =
+        Regex("window\\.__CONNECTDESK_SERVER_URL__\\s*=\\s*\"([^\"]+)\"")
+
+    /** `<script … src="…">` URLs referenced by a page, in document order. */
+    private val SCRIPT_SRC_REGEX = Regex("<script[^>]+src=\"([^\"]+)\"")
 
     @Volatile
     var active: String? = null
 
     fun init(context: Context) {
-        val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString(KEY_URL, null)
-        if (stored != null && stored.isNotBlank()) {
-            active = stored
-            candidates = listOf(stored) + candidates.filter { it != stored }
-        }
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val stored = prefs.getString(KEY_URL, null)
+        // A stored URL only wins if Convex has not disabled that deployment.
+        // Persisting cautious-squirrel-266 and then losing that account to the
+        // free-plan ceiling is what left this app answering "Server returned
+        // HTTP 500" on every screen: the preference outlived the server. Falling
+        // back to ACTIVE_DEFAULT is what makes a fresh install — and an upgrade
+        // out of that broken state — land on the live deployment at once,
+        // without waiting for a discovery round trip.
+        val chosen = stored?.takeIf { it.isNotBlank() && isUsable(it) } ?: ACTIVE_DEFAULT
+        active = chosen
+        if (chosen != stored) prefs.edit().putString(KEY_URL, chosen).apply()
+        candidates = listOf(chosen) + candidates.filter { it != chosen }
     }
 
     private fun remember(context: Context, url: String) {
@@ -105,7 +157,14 @@ object Backend {
     fun resolve(context: Context, probe: (String) -> Boolean): String? {
         val current = active
         if (current != null && probe(current)) return current
-        for (candidate in candidates) {
+        // ACTIVE_DEFAULT is walked FIRST. The literal order of `candidates`
+        // cannot express that (CI pins it), and the literal order would
+        // otherwise settle on one of the old-but-still-answering deployments
+        // before ever reaching the one the dashboard writes pairing codes to —
+        // the classic "HTTP 400 Invalid pairing code" for a perfectly good code.
+        val walk = listOf(ACTIVE_DEFAULT) + candidates.filter { it != ACTIVE_DEFAULT }
+        for (candidate in walk) {
+            if (!isUsable(candidate)) continue
             if (candidate == current) continue
             if (probe(candidate)) {
                 remember(context, candidate)
@@ -115,17 +174,29 @@ object Backend {
         return current
     }
 
-    /** Lets the app be pointed at a custom backend if one is ever needed. */
+    /**
+     * Lets the app be pointed at a custom backend if one is ever needed.
+     *
+     * A deployment Convex has disabled is REFUSED here, and this matters more
+     * than it looks: it is the single entry point every discovery path uses
+     * (MainActivity.onResume, DeviceService's 10-second tick, config
+     * discovery), so refusing once here means no caller can drag the phone back
+     * onto an account that answers 500 to everything.
+     */
     fun setActive(context: Context, url: String) {
-        remember(context, url.trimEnd('/'))
+        val clean = url.trim().trimEnd('/')
+        if (!isUsable(clean)) return
+        remember(context, clean)
     }
 
     /**
      * Fetches the current backend URL from the server's config endpoint.
      *
-     * Called periodically (every ~5 min) and on background resume. If the
-     * server reports a different URL than we currently use, we switch to it
-     * automatically — no app restart, no reinstall needed.
+     * Called every 10 seconds while the foreground service loop runs, and on
+     * every Activity resume (see `DeviceService.CONFIG_CHECK_MS` and
+     * `MainActivity.DISCOVERY_MS`). If the server reports a different URL than
+     * we currently use, we switch to it automatically — no app restart, no
+     * reinstall, no rebuild, and it lands well inside 30 seconds.
      *
      * This is what makes server switches survive without rebuild: when you
      * change project/deployment in the Convex dashboard, this function reads
@@ -185,17 +256,59 @@ object Backend {
                 .url(dashboardUrl)
                 .header("User-Agent", "ConnectDesk/Android")
                 .build()
-            http.newCall(request).execute().use { response ->
+            val html = http.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@runCatching null
-                val body = response.body?.string() ?: return@runCatching null
-                // Find window.__CONNECTDESK_SERVER_URL__ = "..." in the HTML/JS
-                val regex = Regex("""window\.__CONNECTDESK_SERVER_URL__\s*=\s*"([^"]+)""")
-                val match = regex.find(body)
-                match?.groupValues?.getOrNull(1)?.trimEnd('/')
-                    ?.takeIf { it.isNotBlank() }
+                response.body?.string() ?: return@runCatching null
             }
+
+            // 1) The copy baked into index.html — one small request, and it is
+            //    there no matter how the bundle is chunked. This is the path
+            //    that was missing: the previous version read ONLY the HTML
+            //    while the assignment lived in /assets/*.js, so the regex
+            //    matched nothing, this returned null every time, and the app
+            //    stayed on the disabled deployment forever.
+            extractServerUrl(html)?.let { found -> return@runCatching found }
+
+            // 2) The runtime copy main.tsx writes when the module loads. That is
+            //    the value reflecting whatever resolveConvexUrl() actually
+            //    picked, so discovery keeps working after a future Convex
+            //    project switch without touching index.html again.
+            for (src in scriptSources(html).take(3)) {
+                val absolute = if (src.startsWith("http://") || src.startsWith("https://")) {
+                    src
+                } else {
+                    dashboardUrl.trimEnd('/') + "/" + src.trimStart('/')
+                }
+                val asset = runCatching {
+                    val assetRequest = Request.Builder()
+                        .url(absolute)
+                        .header("User-Agent", "ConnectDesk/Android")
+                        .build()
+                    http.newCall(assetRequest).execute().use { r ->
+                        if (r.isSuccessful) r.body?.string() else null
+                    }
+                }.getOrNull()
+                if (asset == null) continue
+                extractServerUrl(asset)?.let { found -> return@runCatching found }
+            }
+            null
         }.getOrElse { null }
     }
+
+    /** Pulls `window.__CONNECTDESK_SERVER_URL__ = "…"` out of a page or bundle. */
+    private fun extractServerUrl(text: String): String? =
+        SERVER_URL_REGEX.find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.trimEnd('/')
+            ?.takeIf { isUsable(it) }
+
+    /** `src` of every `<script>` tag in the document, in document order. */
+    private fun scriptSources(html: String): List<String> =
+        SCRIPT_SRC_REGEX.findAll(html)
+            .mapNotNull { it.groupValues.getOrNull(1) }
+            .filter { it.isNotBlank() }
+            .toList()
 
     /**
      * Dashboard URL to probe for server discovery. Defaults to the published
@@ -234,6 +347,10 @@ object Backend {
         for (step in 1..list.size) {
             val next = list[((idx + step) % list.size + list.size) % list.size]
             if (next != current) {
+                // Never rotate ONTO a deployment Convex has disabled: that
+                // would trade a confusing "Invalid pairing code" for a hard
+                // "Server returned HTTP 500" on the very next request.
+                if (!isUsable(next)) continue
                 remember(context, next)
                 return true
             }
